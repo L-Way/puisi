@@ -939,6 +939,7 @@ function tone(freqs) {
    ===================================================================== */
 let me = null, partner = null, room = null, badge = { saskia: 0, selpia: 0 }, decoy = false, sb = null, chan = null, rtOk = false;
 let msgs = [], seen = new Set(), textCache = new Map();
+let justDeliveredIds = new Set(); // id pesan yang baru saja ditandai "diterima" pada siklus sync ini — ditunda dari "dibaca" 1 siklus
 let partnerOnline = false, typingUntil = 0, lastTypeSent = 0;
 let partnerLastSeen = 0, lastSeenReady = false, presenceBusy = false;
 let stick = true, unread = 0, lastSig = '', firstRender = true, firstSync = true;
@@ -1307,8 +1308,9 @@ async function sync() {
     if (delIds.length) {
       const td = iso();
       msgs.forEach(m => { if (delIds.includes(m.id)) m.delivered_at = td; });
-      sb.from('messages').update({ delivered_at: td }).in('id', delIds).is('delivered_at', null).then(() => {});
+      sb.from('messages').update({ delivered_at: td }).in('id', delIds).is('delivered_at', null).then(r => { if (r.error) console.warn('[delivered_at] gagal update:', r.error.message || r.error); });
     }
+    justDeliveredIds = new Set(delIds); // jangan langsung ditandai "dibaca" di siklus yang sama — beri jeda supaya status "diterima" sempat terlihat
     if (!firstSync && fresh.length) { tone([880, 1175]); vib(12); if (!stick) { unread += fresh.length; updateFab(); } }
     firstSync = false;
     render();
@@ -1339,8 +1341,8 @@ async function maintain() {
   }
   // tandai dibaca
   if (!document.hidden && !shieldOff) {
-    const ids = msgs.filter(m => m.sender === partner && (m.kind === 'text' || m.kind === 'audio') && !m.read_at).map(m => m.id);
-    if (ids.length) { const t = iso(); msgs.forEach(m => { if (ids.includes(m.id)) m.read_at = t; }); sb.from('messages').update({ read_at: t }).in('id', ids).then(() => {}); clearNotifs(room); }
+    const ids = msgs.filter(m => m.sender === partner && (m.kind === 'text' || m.kind === 'audio') && !m.read_at && !justDeliveredIds.has(m.id)).map(m => m.id);
+    if (ids.length) { const t = iso(); msgs.forEach(m => { if (ids.includes(m.id)) m.read_at = t; }); sb.from('messages').update({ read_at: t }).in('id', ids).then(r => { if (r.error) console.warn('[read_at] gagal update:', r.error.message || r.error); }); clearNotifs(room); }
   }
   // buang kadaluarsa
   if (now - lastClean > 120000) { lastClean = now; sb.from('messages').delete().lt('expires_at', iso()).then(() => {}); }
@@ -1409,7 +1411,7 @@ function autosize() { ta.style.height = 'auto'; ta.style.height = Math.min(ta.sc
 function updateSendBtn() {
   const hasText = !!ta.value.trim();
   $('btnSend').classList.toggle('on', hasText || recording);
-  if (!recording) $('btnSend').innerHTML = hasText ? I.send : I.mic;
+  $('btnSend').innerHTML = (hasText || recording) ? I.send : I.mic;
 }
 ta.addEventListener('input', () => {
   autosize(); updateSendBtn();
