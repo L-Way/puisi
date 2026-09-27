@@ -117,7 +117,8 @@ section{position:absolute;inset:0}
 .hs{font-size:11px;color:var(--muted);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:color .3s}
 .hs.love{font-family:var(--serif);font-style:italic;font-size:11px;color:var(--rose2)}
 .hs.typing{color:var(--rose2);font-style:normal;font-family:var(--font)}
-.hs.seen{color:var(--muted)}
+.hs.seen{color:var(--muted);display:inline-flex;align-items:center;gap:3px;vertical-align:middle}
+.hs.seen .ic{width:11px;height:11px;flex:none;stroke-width:2.2;opacity:.85}
 .ib{flex:none;width:36px;height:36px;border-radius:12px;display:grid;place-items:center;color:var(--muted);transition:transform .2s var(--spring),background .2s,color .2s}
 .ib:active{transform:scale(.88);background:rgba(255,255,255,.08);color:var(--text)}
 .ib .ic{width:19px;height:19px}
@@ -428,6 +429,10 @@ section{position:absolute;inset:0}
 .cbtn.off{background:#fff;color:#141018}
 .cbtn.end{background:var(--danger);box-shadow:0 8px 24px rgba(255,107,129,.4)}
 .cbtn.end .ic{transform:rotate(135deg)}
+.cbtn.busy{pointer-events:none}
+.cbtn.busy .ic{animation:rot .7s linear infinite}
+#callLocalVid{transition:transform .2s,filter .25s}
+#callLocalVid.switching{filter:blur(6px) brightness(.7)}
 .cbtn.accept{background:var(--ok);box-shadow:0 8px 24px rgba(91,227,161,.4)}
 .call-acts.wide{gap:26px}
 
@@ -1319,7 +1324,7 @@ function updateHeader() {
   $('hChip').hidden = !(!decoy && partnerOnline && v.sub && !typing);
   if (typing) { hs.className = 'hs typing'; hs.textContent = 'sedang mengetik…'; }
   else if (v.sub && !(!decoy && !partnerOnline && partnerLastSeen)) { hs.className = 'hs love'; hs.textContent = v.sub; }
-  else if (!decoy && !partnerOnline && partnerLastSeen) { hs.className = 'hs seen'; hs.textContent = 'terakhir online ' + fmtLastSeen(partnerLastSeen); }
+  else if (!decoy && !partnerOnline && partnerLastSeen) { hs.className = 'hs seen'; hs.innerHTML = I.clock + fmtLastSeen(partnerLastSeen); }
   else if (!decoy && !partnerOnline && !lastSeenReady) { /* belum sempat cek server — jangan buru-buru bilang "offline" */ }
   else { hs.className = 'hs'; hs.textContent = partnerOnline ? 'online' : 'offline'; }
   const showT = typing && !decoy ? true : typing;
@@ -2877,7 +2882,7 @@ let callState = 'idle';     // idle | outgoing | incoming | active
 let callPC = null, callId = null, callIsVideo = false;
 let callLocalStream = null, callRemoteStream = null;
 let callRingT = null, callDurT = null, callStartedAt = 0;
-let micOn = true, camOn = true, callFacing = 'user';
+let micOn = true, camOn = true, callFacing = 'user', camFlipBusy = false;
 
 function callPartnerView() { return partnerView(); }
 function callSignal(payload) { if (chan && rtOk) chan.send({ type: 'broadcast', event: 'call', payload: Object.assign({ from: me, id: callId }, payload) }); }
@@ -3011,20 +3016,44 @@ $('callCamBtn').addEventListener('click', () => {
   if (!callLocalStream || !callIsVideo) return;
   camOn = !camOn; callLocalStream.getVideoTracks().forEach(t => t.enabled = camOn); updateCallBtns(); vib(6);
 });
-$('callFlipBtn').addEventListener('click', async () => {
-  if (!callLocalStream || !callIsVideo) return;
-  callFacing = callFacing === 'user' ? 'environment' : 'user';
+async function switchCallCamera() {
+  if (!callLocalStream || !callIsVideo || camFlipBusy) return;
+  camFlipBusy = true;
+  const fb = $('callFlipBtn'); fb.classList.add('busy');
+  const prevFacing = callFacing, nextFacing = callFacing === 'user' ? 'environment' : 'user';
+  const lv = $('callLocalVid'); lv.classList.add('switching');
+  const sender = callPC && callPC.getSenders().find(s => s.track && s.track.kind === 'video');
+  const oldT = callLocalStream.getVideoTracks()[0];
+  // Kebanyakan HP (terutama iPhone) cuma boleh satu kamera aktif dalam satu waktu.
+  // Kalau kamera baru diminta SEBELUM yang lama dimatikan, banyak browser cuma balikin
+  // kamera yang sama lagi (kelihatan kayak tombol tidak berfungsi). Makanya matikan dulu.
+  if (oldT) { try { callLocalStream.removeTrack(oldT); } catch (e) {} oldT.stop(); }
+  const grab = async (mode) => {
+    try { return await navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: mode } }, audio: false }); }
+    catch (e) { return await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: mode } }, audio: false }); }
+  };
   try {
-    const oldT = callLocalStream.getVideoTracks()[0];
-    const ns = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: callFacing } }, audio: false });
+    const ns = await grab(nextFacing);
     const nt = ns.getVideoTracks()[0];
-    const sender = callPC && callPC.getSenders().find(s => s.track && s.track.kind === 'video');
     if (sender) await sender.replaceTrack(nt);
-    if (oldT) { callLocalStream.removeTrack(oldT); oldT.stop(); }
     callLocalStream.addTrack(nt);
-    const lv = $('callLocalVid'); lv.srcObject = callLocalStream; lv.classList.toggle('rear', callFacing !== 'user');
-  } catch (e) { toast('Tidak bisa ganti kamera'); }
-});
+    callFacing = nextFacing;
+    lv.srcObject = callLocalStream; lv.classList.toggle('rear', callFacing !== 'user');
+    vib(6);
+  } catch (e) {
+    toast('Tidak bisa ganti kamera');
+    // gagal pindah — coba nyalakan lagi kamera semula supaya video tidak mati total
+    try {
+      const rs = await grab(prevFacing);
+      const rt = rs.getVideoTracks()[0];
+      if (sender) await sender.replaceTrack(rt);
+      callLocalStream.addTrack(rt);
+      callFacing = prevFacing;
+      lv.srcObject = callLocalStream; lv.classList.toggle('rear', callFacing !== 'user');
+    } catch (e2) { camOn = false; updateCallBtns(); }
+  } finally { camFlipBusy = false; fb.classList.remove('busy'); lv.classList.remove('switching'); }
+}
+$('callFlipBtn').addEventListener('click', switchCallCamera);
 
 // hati melayang di halaman login
 (function hearts() {
