@@ -109,6 +109,8 @@ section{position:absolute;inset:0}
 .av .dot{position:absolute;right:0;bottom:0;width:10px;height:10px;border-radius:50%;background:#6b5d78;border:2px solid #140f1c;transition:background .3s,box-shadow .3s}
 .av.on .dot{background:var(--ok);box-shadow:0 0 0 0 rgba(91,227,161,.6);animation:pulse 2s infinite}
 @keyframes pulse{70%{box-shadow:0 0 0 7px rgba(91,227,161,0)}100%{box-shadow:0 0 0 0 rgba(91,227,161,0)}}
+.hdr-info{display:flex;align-items:center;gap:9px;flex:1;min-width:0;text-align:left;padding:3px 6px 3px 3px;margin:-3px 0;border-radius:13px;transition:background .18s,transform .15s var(--spring)}
+.hdr-info:active{background:rgba(255,255,255,.07);transform:scale(.985)}
 .hm{flex:1;min-width:0}
 .hn{display:flex;align-items:center;gap:7px;font-weight:700;font-size:14.5px;line-height:1.2}
 .hn span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -117,8 +119,8 @@ section{position:absolute;inset:0}
 .hs{font-size:11px;color:var(--muted);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:color .3s}
 .hs.love{font-family:var(--serif);font-style:italic;font-size:11px;color:var(--rose2)}
 .hs.typing{color:var(--rose2);font-style:normal;font-family:var(--font)}
-.hs.seen{color:var(--muted);display:inline-flex;align-items:center;gap:3px;vertical-align:middle}
-.hs.seen .ic{width:11px;height:11px;flex:none;stroke-width:2.2;opacity:.85}
+.hs.seen{color:var(--muted)}
+.hs.seen .ic{width:11px;height:11px;stroke-width:2.2;opacity:.85;vertical-align:-1.5px;margin-right:3px}
 .ib{flex:none;width:36px;height:36px;border-radius:12px;display:grid;place-items:center;color:var(--muted);transition:transform .2s var(--spring),background .2s,color .2s}
 .ib:active{transform:scale(.88);background:rgba(255,255,255,.08);color:var(--text)}
 .ib .ic{width:19px;height:19px}
@@ -353,6 +355,22 @@ section{position:absolute;inset:0}
 .btn.cta{width:auto;height:50px;border-radius:16px;font-size:15px}
 .acts{display:flex;gap:10px}.acts .btn{flex:1}
 .sh-card{max-height:100%;overflow-y:auto;overscroll-behavior:contain}
+.prof{display:flex;flex-direction:column;align-items:center;text-align:center;padding:8px 6px 16px;gap:2px}
+.prof-av{position:relative;width:72px;height:72px;border-radius:50%;display:grid;place-items:center;font-family:var(--serif);font-style:italic;font-weight:600;font-size:26px;color:#fff;
+  background:radial-gradient(circle at 30% 25%,#ff8fab,#e0459f 55%,#7a2fb0);box-shadow:0 10px 30px rgba(255,92,138,.35);margin-bottom:10px}
+.prof-av.on::after{content:"";position:absolute;right:1px;bottom:1px;width:16px;height:16px;border-radius:50%;background:var(--ok);border:3px solid var(--surface)}
+.prof-name{font-family:var(--serif);font-style:italic;font-weight:600;font-size:20px}
+.prof-status{margin-top:5px;font-size:13px;color:var(--muted);display:inline-flex;align-items:center;gap:5px}
+.prof-status .ic{width:13px;height:13px;stroke-width:2.2}
+.prof-status.on{color:var(--ok)}
+.prof-status.typing{color:var(--rose2)}
+.prof-dot{width:8px;height:8px;border-radius:50%;background:var(--ok)}
+.prof-dot.off{background:#6b5d78}
+.prof-sub{font-family:var(--serif);font-style:italic;font-size:14px;color:var(--rose2);margin:6px 10px 4px}
+.prof-acts{display:flex;gap:12px;justify-content:center;margin:14px 6px 4px}
+.prof-act{display:flex;flex-direction:column;align-items:center;gap:6px;width:76px;padding:12px 0;border-radius:16px;background:rgba(255,255,255,.06);font-size:12px;font-weight:600;transition:background .2s,transform .2s var(--spring)}
+.prof-act:active{background:rgba(255,255,255,.1);transform:scale(.95)}
+.prof-act .ic{width:20px;height:20px;color:var(--rose2)}
 .fld{display:block;width:100%;height:50px;border-radius:14px;border:1.5px solid var(--line);background:rgba(255,255,255,.05);color:var(--text);font-size:16px;padding:0 16px;margin:0 0 10px;outline:none;transition:border-color .25s,box-shadow .25s}
 .fld-lbl{display:block;font-size:12px;color:var(--muted);margin:0 6px 6px}
 .fld:focus{border-color:var(--rose);box-shadow:0 0 0 4px rgba(255,92,138,.16)}
@@ -599,11 +617,13 @@ section{position:absolute;inset:0}
     <div class="aurora"></div>
     <header id="hdr">
       <button class="ib" id="btnRooms" aria-label="Pilih obrolan" aria-haspopup="dialog" hidden></button>
-      <div class="av" id="hAv"><span id="hIn"></span><i class="dot"></i></div>
-      <div class="hm">
-        <div class="hn"><span id="hName"></span><b class="chip" id="hChip" hidden>online</b></div>
-        <div class="hs" id="hSub"></div>
-      </div>
+      <button class="hdr-info" id="hdrInfo" type="button" aria-haspopup="dialog" aria-label="Lihat info kontak">
+        <div class="av" id="hAv"><span id="hIn"></span><i class="dot"></i></div>
+        <div class="hm">
+          <div class="hn"><span id="hName"></span><b class="chip" id="hChip" hidden>online</b></div>
+          <div class="hs" id="hSub"></div>
+        </div>
+      </button>
       <button class="ib" id="btnCallV" aria-label="Panggilan suara"></button>
       <button class="ib" id="btnCallC" aria-label="Panggilan video"></button>
       <button class="ib" id="btnLock" aria-label="Kunci"></button>
@@ -1331,6 +1351,31 @@ function updateHeader() {
   $('typing').classList.toggle('on', showT);
   if (showT && stick) scrollBottom(false);
 }
+function openProfileSheet() {
+  const v = partnerView();
+  const typing = Date.now() < typingUntil;
+  let statusHtml = '';
+  if (!decoy) {
+    if (typing) statusHtml = `<div class="prof-status typing">sedang mengetik…</div>`;
+    else if (partnerOnline) statusHtml = `<div class="prof-status on"><i class="prof-dot"></i>Online sekarang</div>`;
+    else if (partnerLastSeen) statusHtml = `<div class="prof-status">${I.clock}Terakhir online ${esc(fmtLastSeen(partnerLastSeen))}</div>`;
+    else if (lastSeenReady) statusHtml = `<div class="prof-status"><i class="prof-dot off"></i>Offline</div>`;
+  }
+  const subHtml = v.sub ? `<p class="prof-sub">${esc(v.sub)}</p>` : '';
+  const actsHtml = decoy ? '' : `<div class="prof-acts">
+      <button class="prof-act" data-act="callv">${I.call}<span>Suara</span></button>
+      <button class="prof-act" data-act="callc">${I.vcam}<span>Video</span></button>
+    </div>`;
+  openSheet(`
+    <div class="prof">
+      <div class="prof-av${!decoy && partnerOnline ? ' on' : ''}"><span>${esc(v.initial)}</span></div>
+      <h3 class="prof-name">${esc(v.name)}</h3>
+      ${statusHtml}
+    </div>
+    ${subHtml}${actsHtml}
+    <div class="acts"><button class="btn ghost" data-act="close">Tutup</button></div>`);
+}
+$('hdrInfo').addEventListener('click', openProfileSheet);
 
 /* =====================================================================
    Cache pesan lokal (IndexedDB)
@@ -2337,6 +2382,8 @@ $('shCard').addEventListener('click', async e => {
     $('shCard').innerHTML = `<div class="sh-t">Hapus semua obrolan?</div><p class="sh-p">Semua pesan dan foto di obrolan ini akan terhapus untuk kamu dan pasanganmu. Tindakan ini tidak bisa dibatalkan.</p><div class="acts"><button class="btn ghost" data-act="close">Batal</button><button class="btn danger" data-act="wipe">Hapus semua</button></div>`;
   }
   else if (a === 'close') closeSheet();
+  else if (a === 'callv') { closeSheet(); await wait(200); startCall(false); }
+  else if (a === 'callc') { closeSheet(); await wait(200); startCall(true); }
   else if (a === 'wipe') {
     closeSheet();
     if (!decoy) { try { await sb.from('messages').delete().eq('room', room); } catch (er) {} cacheClearRoom(room); }
