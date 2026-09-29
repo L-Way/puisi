@@ -238,6 +238,18 @@ section{position:absolute;inset:0}
 .b.tomb .ic{width:16px;height:16px}
 .b.tomb.in{animation:fadeup .5s var(--ease)}
 @keyframes fadeup{from{opacity:0;transform:translateY(6px)}}
+/* Riwayat panggilan di dalam chat */
+.row.callrow{justify-content:center;margin:10px 0}
+.row.enter .clog{animation:popin .5s var(--spring) both;animation-delay:var(--dl,0s)}
+.clog{display:flex;align-items:center;gap:11px;max-width:88%;padding:8px 16px 8px 9px;border-radius:20px;background:rgba(255,255,255,.05);border:1px solid var(--line);cursor:pointer;text-align:left;transition:transform .2s var(--spring),background .2s}
+.clog:active{transform:scale(.97);background:rgba(255,255,255,.09)}
+.clog .ci{flex:none;width:34px;height:34px;border-radius:50%;display:grid;place-items:center;background:rgba(91,227,161,.14);color:var(--ok)}
+.clog.bad .ci{background:rgba(255,107,129,.16);color:var(--danger)}
+.clog .ci .ic{width:16px;height:16px}
+.clog .ct{min-width:0}
+.clog b{display:block;font-size:13px;font-weight:600;line-height:1.3}
+.clog.bad b{color:#ffb3c6}
+.clog .cs{display:block;margin-top:1px;font-size:11.5px;color:var(--muted)}
 .dissolve{animation:dissolve .62s var(--ease) forwards!important}
 @keyframes dissolve{0%{opacity:1;filter:blur(0);transform:scale(1)}55%{opacity:.55;filter:blur(3px);transform:scale(.97)}100%{opacity:0;filter:blur(12px);transform:scale(.8)}}
 .pf{position:fixed;z-index:300;width:9px;height:9px;border-radius:50%;background:var(--c);pointer-events:none;animation:pf .75s var(--ease) forwards}
@@ -289,7 +301,7 @@ section{position:absolute;inset:0}
 .sendb{flex:none;width:40px;height:40px;border-radius:50%;display:grid;place-items:center;color:#7d6f8b;background:var(--surface);border:1.5px solid var(--line);transition:transform .35s var(--spring),background .3s,color .3s,box-shadow .3s}
 .sendb .ic{transition:transform .4s var(--spring);width:18px;height:18px}
 .sendb.on{color:#fff;background:linear-gradient(135deg,var(--rose),var(--violet));border-color:transparent;box-shadow:0 6px 20px rgba(255,92,138,.45);transform:scale(1.06)}
-.sendb.on .ic{transform:translate(1px,-1px) rotate(0)}
+.sendb.on .ic{transform:none}
 .sendb:active{transform:scale(.88)}
 .sendb.fly .ic{animation:fly .55s var(--ease)}
 @keyframes fly{0%{transform:none;opacity:1}45%{transform:translate(26px,-26px) scale(.6);opacity:0}46%{transform:translate(-26px,26px) scale(.6);opacity:0}100%{transform:none;opacity:1}}
@@ -1176,8 +1188,9 @@ function quoteHTML(m) {
     const label = deletedIds.has(m.reply_to) ? 'Pesan sudah dihapus' : 'Pesan sudah kadaluarsa';
     return `<div class="qref gone"><span class="ql"></span><div class="qb"><span class="qt">${label}</span></div></div>`;
   }
+  if (o.kind !== 'image' && o.photo_gone) return `<div class="qref gone"><span class="ql"></span><div class="qb"><span class="qt">Pesan sudah dihapus</span></div></div>`;
   const name = nameOf(o);
-  const snip = o.kind === 'image' ? (o.photo_gone ? 'Foto sudah hilang' : '📷 Foto') : o.kind === 'audio' ? '🎤 Pesan suara' : (o.body || '').slice(0, 80);
+  const snip = o.kind === 'image' ? (o.photo_gone ? 'Foto sudah hilang' : '📷 Foto') : o.kind === 'audio' ? '🎤 Pesan suara' : callInfo(o) ? '📞 Panggilan' : (o.body || '').slice(0, 80);
   return `<div class="qref" data-jump="${o.id}"><span class="ql"></span><div class="qb"><span class="qn">${esc(name)}</span><span class="qt">${esc(snip)}</span></div></div>`;
 }
 function quoteSig(m) {
@@ -1195,6 +1208,23 @@ function reactChip(m) {
   if (!vals.length) return '';
   return `<span class="react-chip">${vals.join(' ')}</span>`;
 }
+const CALL_TAG = '\u0001call:';
+function callInfo(m) {
+  if (!m || m.kind !== 'text' || !m.body || m.body.charCodeAt(0) !== 1 || !m.body.startsWith(CALL_TAG)) return null;
+  try { const o = JSON.parse(m.body.slice(CALL_TAG.length)); return (o && o.st) ? o : null; } catch (e) { return null; }
+}
+function callRowHTML(m, o, enter, st) {
+  const out = o.from === me, vid = !!o.v, ty = vid ? 'video' : 'suara';
+  let title, bad = false, sub = fmtTime(m.created_at);
+  switch (o.st) {
+    case 'done': title = `Panggilan ${ty} ${out ? 'keluar' : 'masuk'}`; sub = 'Durasi ' + fmtDur(o.dur || 0) + ' · ' + sub; break;
+    case 'declined': title = out ? `Panggilan ${ty} ditolak` : `Kamu menolak panggilan ${ty}`; bad = out; break;
+    case 'busy': title = out ? 'Sedang di panggilan lain' : `Panggilan ${ty} tidak terjawab`; bad = true; break;
+    case 'failed': title = `Panggilan ${ty} gagal tersambung`; bad = true; break;
+    default: title = out ? `Panggilan ${ty} tidak dijawab` : `Panggilan ${ty} tidak terjawab`; bad = true;
+  }
+  return `<div class="row callrow${enter ? ' enter' : ''}" data-id="${m.id}"${st}><div class="clog${bad ? ' bad' : ''}" data-callback="${vid ? 'v' : 'a'}"><span class="ci">${vid ? I.vcam : I.call}</span><div class="ct"><b>${esc(title)}</b><span class="cs">${esc(sub)}</span></div></div></div>`;
+}
 function rowSig(m, first, last, day) {
   const left = new Date(m.expires_at) - Date.now();
   const leftMin = (!decoy && left < 3600000 && left > 0) ? Math.max(1, Math.ceil(left / 60000)) : 0;
@@ -1211,6 +1241,11 @@ function rowHTML(m, first, last, enter, delay) {
   const q = quoteHTML(m);
   const nm = `<span class="nm">${esc(nameOf(m))}</span>`;
   const rbtn = (m.pending || m.failed) ? '' : `<button type="button" class="rbtn" data-reply="${m.id}" aria-label="Balas pesan">${I.reply}</button>`;
+  const ci = callInfo(m);
+  if (ci) return callRowHTML(m, ci, enter, st);
+  if ((m.kind === 'text' || m.kind === 'audio') && m.photo_gone) {
+    return `<div class="${cls}" data-id="${m.id}"${st}><div class="b tomb${m._fresh ? ' in' : ''}">${I.trash}<span>Pesan ini sudah dihapus</span><span class="meta" style="margin:0 0 0 4px">${fmtTime(m.created_at)}</span></div></div>`;
+  }
   if (m.kind === 'text') {
     return `<div class="${cls}" data-id="${m.id}"${st}>${rico}<div class="b${m.failed ? ' failed' : ''}">${nm}${q}${esc(m.body || '')}${meta}${rbtn}${reactChip(m)}</div></div>`;
   }
@@ -1277,8 +1312,8 @@ function renderInner(opts) {
     if (d !== lastDay) { wanted.push({ key: 'day:' + m.id, kind: 'day', label: d }); lastDay = d; }
     const pv = msgs[i - 1], nx = msgs[i + 1];
     const gap = (a, b) => Math.abs(new Date(b.created_at) - new Date(a.created_at));
-    const first = !pv || pv.sender !== m.sender || dayLabel(pv.created_at) !== d || gap(pv, m) > 180000;
-    const last = !nx || nx.sender !== m.sender || dayLabel(nx.created_at) !== d || gap(m, nx) > 180000;
+    const first = !pv || callInfo(pv) || callInfo(m) || pv.sender !== m.sender || dayLabel(pv.created_at) !== d || gap(pv, m) > 180000;
+    const last = !nx || callInfo(nx) || callInfo(m) || nx.sender !== m.sender || dayLabel(nx.created_at) !== d || gap(m, nx) > 180000;
     let enter = false, delay = 0;
     if (!seen.has(m.id)) { seen.add(m.id); enter = true; if (firstRender && i >= startAt) delay = (idx++) * .045; }
     wanted.push({ key: m.id, kind: 'msg', m, first, last, enter, delay, rsig: rowSig(m, first, last, d) });
@@ -1535,10 +1570,13 @@ async function sync() {
     const prevIds = new Set(msgs.map(m => m.id)), byId = new Map(msgs.map(m => [m.id, m]));
     const out = [];
     for (const r of rows) {
-      if ((r.kind === 'text' || r.kind === 'audio') && r.photo_gone) { markDeleted(r.id); continue; } // pesan teks/suara yang sudah dihapus untuk semua — jangan ditampilkan sebagai bubble
-      if ((r.kind === 'text' || r.kind === 'audio') && r.delete_req_at && r.sender === me) { markDeleted(r.id); continue; } // sudah kuhapus sendiri; di sisi Er masih menunggu jeda baca sebelum benar-benar hilang
-      let body = null;
       if (r.kind === 'text' || r.kind === 'audio') {
+        if (r.photo_gone) markDeleted(r.id);   // dihapus untuk semua: tampilkan penanda "Pesan ini sudah dihapus"
+        else if (r.delete_req_at && r.sender === me) { markDeleted(r.id); r.photo_gone = true; }   // sisi pengirim: langsung tampil terhapus
+      }
+      let body = null;
+      if ((r.kind === 'text' || r.kind === 'audio') && r.photo_gone) body = '';
+      else if (r.kind === 'text' || r.kind === 'audio') {
         body = textCache.get(r.id);
         if (body === undefined) { try { body = await dec(r.body); } catch (e) { body = r.kind === 'audio' ? '{}' : 'Pesan tidak bisa dibuka'; } textCache.set(r.id, body); }
       }
@@ -1891,6 +1929,8 @@ list.addEventListener('click', e => {
   if (Date.now() - lastSwipeAt < 250) return; // abaikan klik yang terpicu setelah geser
   const rb = e.target.closest('[data-reply]');
   if (rb) { vib(8); startReply(rb.dataset.reply); return; }
+  const cbk = e.target.closest('[data-callback]');
+  if (cbk) { callBackSheet(); return; }
   const jump = e.target.closest('[data-jump]');
   if (jump) {
     const row = list.querySelector(`.row[data-id="${jump.dataset.jump}"]`);
@@ -1925,6 +1965,8 @@ list.addEventListener('pointermove', e => { if (lp && lpXY && Math.hypot(e.clien
 /* ---------- Balas pesan: geser bubble untuk membalas ---------- */
 function startReply(id) {
   const m = msgs.find(x => x.id === id); if (!m || decoy) return;
+  if (callInfo(m)) return;
+  if (m.kind !== 'image' && m.photo_gone) { toast('Pesan ini sudah dihapus'); return; }
   if (m.pending || m.failed) { if (m.pending) toast('Tunggu pesannya terkirim dulu'); return; }   // pesan yang belum tersimpan di server belum bisa dikutip
   replyTo = id;
   const name = nameOf(m);
@@ -1985,8 +2027,17 @@ function endSwipe(e) {
 }
 list.addEventListener('pointerup', endSwipe);
 list.addEventListener('pointercancel', endSwipe);
+function callBackSheet() {
+  if (decoy || !me || callState !== 'idle') return;
+  const v = partnerView();
+  openSheet(`<div class="sh-t">Telepon ${esc(v.name)}?</div><p class="sh-p">Pilih jenis panggilan.</p>
+    <button class="it" data-act="callv">${I.call}<span>Panggilan suara</span></button>
+    <button class="it" data-act="callc">${I.vcam}<span>Panggilan video</span></button>
+    <div class="acts"><button class="btn ghost" data-act="close">Batal</button></div>`);
+}
 function msgMenu(id) {
   const m = msgs.find(x => x.id === id); if (!m) return;
+  if (callInfo(m) || (m.kind !== 'image' && m.photo_gone)) return;   // riwayat panggilan & pesan terhapus tidak punya menu
   const REACT_EMOJI = ['❤️', '😂', '😮', '😢', '👍', '🔥'];
   let html = '';
   if (!m.pending && !m.failed) {
@@ -2016,29 +2067,32 @@ async function setReaction(id, emoji) {
 // terhapus di server (supaya perangkat lain — termasuk yang belum sync — ikut tahu).
 async function finalizeDelete(id) {
   markDeleted(id);
-  msgs = msgs.filter(m => m.id !== id);
-  cacheDeleteMsg(id);
+  const m = msgs.find(x => x.id === id);
+  if (m) { m.photo_gone = true; m.body = ''; m._fresh = true; textCache.set(id, ''); }
+  cacheSaveRoom(room, msgs);
   render({ force: true });
   try { await sb.from('messages').update({ body: null, photo_gone: true }).eq('id', id); } catch (e) {}
 }
 async function deleteMsg(id) {
   closeSheet();
   const m = msgs.find(x => x.id === id);
-  // Pesan teks/suara yang dikirim KE Er Ganteng: di akun pengirim, pesan ini sudah
-  // dianggap terhapus sejak sekarang. Tapi di sisi Er, pesan itu jangan langsung
-  // ikut hilang — biarkan dulu sampai benar-benar dibaca olehnya, baru benar-benar
-  // lenyap ER_DELETE_MIN menit setelah itu (dicek berkala di maintain()).
-  const delayed = !!m && m.sender !== 'er' && (m.kind === 'text' || m.kind === 'audio');
+  if (!m || callInfo(m)) return;
+  if (m.pending) { toast('Tunggu pesannya terkirim dulu'); return; }
+  if (m.failed) { msgs = msgs.filter(x => x.id !== id); textCache.delete(id); render({ force: true }); return; }   // belum pernah terkirim: buang saja
+  const txt = m.kind === 'text' || m.kind === 'audio';
+  // Pesan teks/suara yang dikirim KE Er: di sisi pengirim langsung jadi "sudah dihapus", tapi di sisi Er
+  // baru berubah ER_DELETE_MIN menit SETELAH Er membacanya (dicek berkala di maintain()).
+  const delayed = txt && m.sender !== 'er';
   const row = list.querySelector(`.row[data-id="${id}"] .b`);
   if (row) { const r = row.getBoundingClientRect(); burst(r.left + r.width / 2, r.top + r.height / 2); row.classList.add('dissolve'); }
   vib(12); await wait(520);
   markDeleted(id);
-  msgs = msgs.filter(x => x.id !== id);
-  cacheDeleteMsg(id);
+  m.photo_gone = true; m.body = txt ? '' : null; m._fresh = true; if (txt) textCache.set(id, '');
+  cacheSaveRoom(room, msgs);
   render({ force: true });
   try {
     if (delayed) await sb.from('messages').update({ delete_req_at: iso() }).eq('id', id);
-    else await sb.from('messages').update({ body: null, photo_gone: true }).eq('id', id); // tandai dihapus (bukan hapus baris), supaya perangkat lain juga tahu ini "dihapus", bukan sekadar hilang/kadaluarsa
+    else await sb.from('messages').update({ body: null, photo_gone: true }).eq('id', id);
   } catch (e) {}
 }
 
@@ -2937,6 +2991,7 @@ let callPC = null, callId = null, callIsVideo = false;
 let callLocalStream = null, callRemoteStream = null;
 let callRingT = null, callDurT = null, callStartedAt = 0;
 let micOn = true, camOn = true, callFacing = 'user', camFlipBusy = false;
+let callRole = '', callRoom = null;
 
 function callPartnerView() { return partnerView(); }
 function callSignal(payload) { if (chan && rtOk) chan.send({ type: 'broadcast', event: 'call', payload: Object.assign({ from: me, id: callId }, payload) }); }
@@ -3000,10 +3055,35 @@ function updateCallBtns() {
   fb.innerHTML = I.flip;
 }
 
+/* Catat setiap panggilan (terjawab, tidak terjawab, ditolak, gagal) sebagai baris di chat.
+   Disimpan sebagai pesan teks terenkripsi dengan id = id panggilan, jadi kedua HP boleh mencatat
+   dan tidak akan dobel (yang kedua ditolak database karena id sama). Tanpa perubahan SQL. */
+async function logCall(reason, connected) {
+  if (decoy || !me || !callId || (callRole === 'caller' && reason === 'media')) return;
+  let st, dur = 0;
+  if (connected) { st = 'done'; dur = Math.max(0, Math.round((Date.now() - callStartedAt) / 1000)); }
+  else if (reason === 'declined') st = 'declined';
+  else if (callRole === 'caller' && reason === 'busy') st = 'busy';
+  else if (callRole === 'caller' && (reason === 'error' || reason === 'drop')) st = 'failed';
+  else st = 'missed';
+  const id = callId, r = callRoom || room, now = Date.now();
+  const body = CALL_TAG + JSON.stringify({ v: callIsVideo ? 1 : 0, st, dur, from: callRole === 'caller' ? me : partner });
+  const c = ensureClient(true);
+  if (r === room && !msgs.some(x => x.id === id)) {
+    msgs.push({ id, room: r, sender: me, kind: 'text', body, reply_to: null, created_at: iso(now), expires_at: iso(now + TTL_MS), read_at: null, delivered_at: null, viewed_at: null, photo_gone: false, reactions: {}, pending: false, failed: false, localAt: now });
+    textCache.set(id, body); render({ scroll: true, smooth: true });
+  }
+  if (!c) return;
+  try {
+    const row = { id, room: r, sender: me, kind: 'text', body: await enc(body) };
+    let res = await c.from('messages').insert(row);
+    if (res.error && res.error.code !== '23505') { await wait(2500); await c.from('messages').insert(row); }
+  } catch (e) {}
+}
 async function startCall(video) {
   if (decoy || !me || callState !== 'idle') return;
   if (!rtOk) { toast('Belum terhubung. Coba lagi.'); return; }
-  callId = uid(); callIsVideo = video; callState = 'outgoing'; vib(10);
+  callId = uid(); callIsVideo = video; callState = 'outgoing'; callRole = 'caller'; callRoom = room; vib(10);
   callShow('out');
   try { await getCallMedia(video); } catch (e) { toast('Tidak bisa akses mikrofon/kamera. Cek izin di browser.'); endCall('media', false); return; }
   callSignal({ type: 'invite', video });
@@ -3022,13 +3102,14 @@ function declineCall(reason) {
 function endCall(reason, notify) {
   if (callState === 'idle') return;
   if (notify !== false) callSignal({ type: 'end' });
+  logCall(reason, callState === 'active');
   callState = 'idle'; stopCallMedia(); callUIReset();
 }
 async function handleCallSignal(p) {
   if (!p || !p.type) return;
   if (p.type === 'invite') {
     if (callState !== 'idle') { chan && chan.send({ type: 'broadcast', event: 'call', payload: { from: me, id: p.id, type: 'busy' } }); return; }
-    callId = p.id; callIsVideo = !!p.video; callState = 'incoming'; vib([0, 200, 120, 200]);
+    callId = p.id; callIsVideo = !!p.video; callState = 'incoming'; callRole = 'callee'; callRoom = room; vib([0, 200, 120, 200]);
     callShow('ring');
     callRingT = setTimeout(() => { if (callState === 'incoming') declineCall('timeout'); }, CONFIG.CALL_RING_MS);
     return;
