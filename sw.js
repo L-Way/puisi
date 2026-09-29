@@ -42,7 +42,6 @@ self.addEventListener('push', event => {
   const body = data.body || 'Ada yang baru untukmu.';
   const tag = room ? 'rk-' + room : 'rk-msg';
   event.waitUntil((async () => {
-    await ackDelivered(room);
     await self.registration.showNotification(title, {
       body,
       tag,
@@ -51,6 +50,7 @@ self.addEventListener('push', event => {
       badge: 'icons/badge-72.png',
       data: { room, count: data.count || 1 }
     });
+    await ackDelivered(room);   // setelah notifikasi tampil, supaya jaringan lambat tidak menundanya
   })());
 });
 
@@ -69,3 +69,26 @@ self.addEventListener('notificationclick', event => {
 });
 
 self.addEventListener('notificationclose', () => {}); // tak perlu tindakan
+
+/* Browser kadang memutar/mengganti langganan push (mis. kedaluwarsa). Tanpa ini,
+   notifikasi diam-diam berhenti sampai aplikasi dibuka lagi. Di sini kita berlangganan
+   ulang dan memindahkan perangkat ke endpoint baru lewat RPC push_rotate (tanpa login;
+   yang jadi bukti hanyalah endpoint lama). */
+self.addEventListener('pushsubscriptionchange', event => {
+  event.waitUntil((async () => {
+    try {
+      const old = event.oldSubscription || null;
+      const key = (old && old.options && old.options.applicationServerKey) ||
+                  (event.newSubscription && event.newSubscription.options && event.newSubscription.options.applicationServerKey);
+      const sub = event.newSubscription || (key ? await self.registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key }) : null);
+      if (!sub || !old) return;
+      const j = sub.toJSON();
+      if (!j.keys) return;
+      await fetch(SUPABASE_URL + '/rest/v1/rpc/push_rotate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', apikey: SUPABASE_ANON_KEY, Authorization: 'Bearer ' + SUPABASE_ANON_KEY },
+        body: JSON.stringify({ p_old_endpoint: old.endpoint, p_endpoint: j.endpoint, p_p256dh: j.keys.p256dh, p_auth: j.keys.auth })
+      });
+    } catch (e) {}
+  })());
+});
