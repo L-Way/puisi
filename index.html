@@ -1665,10 +1665,16 @@ function connectRealtime() {
    Kirim pesan
    ===================================================================== */
 function autosize() { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight, 120) + 'px'; }
+let sendMode = '';
 function updateSendBtn() {
-  const hasText = !!ta.value.trim();
-  $('btnSend').classList.toggle('on', hasText || recording);
-  $('btnSend').innerHTML = (hasText || recording) ? I.send : I.mic;
+  const active = !!ta.value.trim() || recording;
+  const b = $('btnSend');
+  b.classList.toggle('on', active);
+  const mode = active ? 'send' : 'mic';
+  if (mode !== sendMode) {
+    sendMode = mode;
+    b.innerHTML = active ? I.send : I.mic;
+  }
 }
 ta.addEventListener('input', () => {
   autosize(); updateSendBtn();
@@ -1680,6 +1686,7 @@ ta.addEventListener('keydown', e => {
   else if (e.key === 'Escape' && replyTo) { cancelReply(); }
 });
 $('btnSend').addEventListener('pointerdown', e => e.preventDefault()); // jaga keyboard tetap terbuka
+$('btnSend').addEventListener('animationend', () => $('btnSend').classList.remove('fly'));
 $('btnSend').addEventListener('click', () => {
   if (recording) { finishRecording(); return; }
   if (ta.value.trim()) { sendText(); return; }
