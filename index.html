@@ -433,6 +433,8 @@ section{position:absolute;inset:0}
   opacity:0;pointer-events:none;visibility:hidden;transition:opacity .3s,visibility 0s .3s}
 #callOv.open{opacity:1;pointer-events:auto;visibility:visible;transition:opacity .3s,visibility 0s}
 #callOv.video.active .call-top{opacity:0;transform:translateY(-10px)}
+#callOv.video.active.roff .call-top{opacity:1;transform:none}
+#callOv.roff #callRemoteVid{visibility:hidden}
 .call-top{position:relative;z-index:2;flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;
   padding:calc(var(--sat) + 20px) 24px 0;text-align:center;transition:opacity .3s,transform .3s}
 .call-av{width:96px;height:96px;border-radius:50%;display:grid;place-items:center;font-family:var(--serif);font-style:italic;font-size:34px;font-weight:600;
@@ -3036,10 +3038,17 @@ function createCallPC() {
   const pc = new RTCPeerConnection({ iceServers: CONFIG.CALL_ICE_SERVERS });
   pc.onicecandidate = e => { if (e.candidate) callSignal({ type: 'ice', candidate: e.candidate.toJSON() }); };
   pc.ontrack = e => {
-    callRemoteStream = e.streams[0];
+    callRemoteStream = e.streams[0] || callRemoteStream || new MediaStream();
+    if (!e.streams[0]) callRemoteStream.addTrack(e.track);
     const rv = $('callRemoteVid');
-    if (callIsVideo) { rv.srcObject = callRemoteStream; rv.hidden = false; }
-    else { rv.srcObject = callRemoteStream; rv.hidden = true; } // audio tetap diputar walau video disembunyikan
+    if (rv.srcObject !== callRemoteStream) rv.srcObject = callRemoteStream;
+    if (e.track.kind === 'video') {
+      const first = !callIsVideo;
+      callIsVideo = true; rv.hidden = false;
+      $('callOv').classList.add('video'); $('callOv').classList.remove('roff');
+      updateCallBtns();
+      if (first && callState === 'active') { toast(callPartnerView().name + ' menyalakan kamera'); vib(10); }
+    } else rv.hidden = !callIsVideo; // audio tetap diputar walau video disembunyikan
     if (callState !== 'active') { callState = 'active'; callStartedAt = Date.now(); callShow('active'); callDurT = setInterval(callTick, 1000); vib(12); }
   };
   pc.onconnectionstatechange = () => { if (['failed', 'closed'].includes(pc.connectionState) && callState !== 'idle') endCall('drop', false); };
@@ -3047,12 +3056,56 @@ function createCallPC() {
   callPC = pc;
   return pc;
 }
+function hasLocalVideo() { return !!(callLocalStream && callLocalStream.getVideoTracks().length); }
 function updateCallBtns() {
-  const mb = $('callMicBtn'), cb = $('callCamBtn'), fb = $('callFlipBtn');
+  const mb = $('callMicBtn'), cb = $('callCamBtn'), fb = $('callFlipBtn'), hv = hasLocalVideo();
   mb.classList.toggle('off', !micOn); mb.innerHTML = micOn ? I.mic : I.mute;
-  cb.hidden = !callIsVideo; fb.hidden = !callIsVideo;
-  cb.classList.toggle('off', !camOn); cb.innerHTML = camOn ? I.vcam : I.vcamoff;
+  const camOff = hv && !camOn;            // kamera pernah menyala lalu dimatikan
+  cb.hidden = false; fb.hidden = !hv;
+  cb.classList.toggle('off', camOff); cb.innerHTML = camOff ? I.vcamoff : I.vcam;
   fb.innerHTML = I.flip;
+}
+let makingOffer = false;
+// Negosiasi ulang di tengah panggilan (mis. menambah video ke panggilan suara)
+async function renegotiate() {
+  if (!callPC) return;
+  makingOffer = true;
+  try { const offer = await callPC.createOffer(); await callPC.setLocalDescription(offer); callSignal({ type: 'reoffer', sdp: offer }); }
+  finally { makingOffer = false; }
+}
+async function handleReoffer(sdp) {
+  const pc = callPC; if (!pc) return;
+  const collision = makingOffer || pc.signalingState !== 'stable';
+  if (collision && callRole === 'caller') return;   // kedua sisi menawar bersamaan: penelepon menang, penerima mengalah
+  try {
+    if (collision) await pc.setLocalDescription({ type: 'rollback' });
+    await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+    const ans = await pc.createAnswer(); await pc.setLocalDescription(ans);
+    callSignal({ type: 'answer', sdp: ans });
+  } catch (e) {}
+}
+// Menyalakan kamera di tengah panggilan suara (atau kamera yang belum pernah menyala)
+async function enableCallVideo() {
+  if (!callPC || callState !== 'active') { toast('Tunggu sampai panggilan tersambung'); return; }
+  if (camFlipBusy) return;
+  camFlipBusy = true;
+  const cb = $('callCamBtn'); cb.classList.add('busy');
+  try {
+    let ns;
+    try { ns = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: callFacing } }, audio: false }); }
+    catch (e) { toast('Tidak bisa menyalakan kamera. Cek izin kamera di browser.'); return; }
+    if (callState !== 'active' || !callLocalStream) { ns.getTracks().forEach(t => t.stop()); return; }
+    const nt = ns.getVideoTracks()[0];
+    callLocalStream.addTrack(nt);
+    callPC.addTrack(nt, callLocalStream);
+    callIsVideo = true; camOn = true;
+    const lv = $('callLocalVid');
+    lv.srcObject = callLocalStream; lv.hidden = false; lv.classList.toggle('rear', callFacing !== 'user');
+    $('callOv').classList.add('video');
+    updateCallBtns(); vib(8);
+    await renegotiate();
+  } catch (e) { toast('Gagal menyalakan kamera'); }
+  finally { camFlipBusy = false; cb.classList.remove('busy'); }
 }
 
 /* Catat setiap panggilan (terjawab, tidak terjawab, ditolak, gagal) sebagai baris di chat.
@@ -3133,6 +3186,10 @@ async function handleCallSignal(p) {
     try { await callPC.setRemoteDescription(new RTCSessionDescription(p.sdp)); } catch (e) {}
   } else if (p.type === 'ice' && callPC && p.candidate) {
     try { await callPC.addIceCandidate(new RTCIceCandidate(p.candidate)); } catch (e) {}
+  } else if (p.type === 'reoffer' && callPC && callState === 'active') {
+    handleReoffer(p.sdp);
+  } else if (p.type === 'cam') {
+    $('callOv').classList.toggle('roff', !p.on);
   } else if (p.type === 'decline') { toast('Panggilan ditolak'); endCall('declined', false); }
   else if (p.type === 'busy') { toast('Sedang di panggilan lain'); endCall('busy', false); }
   else if (p.type === 'end') { endCall('remote', false); }
@@ -3148,8 +3205,12 @@ $('callMicBtn').addEventListener('click', () => {
   micOn = !micOn; callLocalStream.getAudioTracks().forEach(t => t.enabled = micOn); updateCallBtns(); vib(6);
 });
 $('callCamBtn').addEventListener('click', () => {
-  if (!callLocalStream || !callIsVideo) return;
-  camOn = !camOn; callLocalStream.getVideoTracks().forEach(t => t.enabled = camOn); updateCallBtns(); vib(6);
+  if (!callLocalStream) return;
+  if (!hasLocalVideo()) { enableCallVideo(); return; }
+  camOn = !camOn; callLocalStream.getVideoTracks().forEach(t => t.enabled = camOn);
+  $('callLocalVid').hidden = !camOn;
+  callSignal({ type: 'cam', on: camOn });   // beri tahu lawan supaya tampil avatar, bukan layar hitam
+  updateCallBtns(); vib(6);
 });
 async function switchCallCamera() {
   if (!callLocalStream || !callIsVideo || camFlipBusy) return;
