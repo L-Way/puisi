@@ -581,6 +581,14 @@ section{position:absolute;inset:0}
   box-shadow:0 10px 30px rgba(0,0,0,.5);transform:translate(-50%,calc(-100% - 40px));transition:transform .5s var(--spring);pointer-events:none}
 #toast.on{transform:translate(-50%,0)}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
+.b a.ml{color:inherit;text-decoration:underline;text-underline-offset:2px;word-break:break-all;-webkit-user-select:text;user-select:text}
+.day.unreadline span{background:rgba(255,92,138,.16);color:var(--rose2)}
+.msg-info{display:flex;flex-direction:column;gap:4px;padding:8px 12px;margin-bottom:8px;border-radius:12px;background:var(--surface2);font-size:12.5px;color:var(--muted)}
+.msg-info div{display:flex;justify-content:space-between;gap:12px}.msg-info b{color:var(--text);font-weight:600}
+#callQ{font-size:12px;opacity:.9;display:flex;align-items:center;gap:6px}
+#callQ::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--ok)}
+#callQ[data-l=mid]::before{background:#ffd166}#callQ[data-l=bad]::before{background:var(--danger)}
+.cbtn.off#callSpkBtn{opacity:.55}
 </style>
 </head>
 <body>
@@ -601,7 +609,11 @@ section{position:absolute;inset:0}
   2d) Jalankan juga user_presence.sql di SQL Editor (dibutuhkan untuk fitur "terakhir online" —
       tanpa tabel ini, upsertPresence()/loadLastSeen() diam-diam gagal karena try/catch, jadi
       statusnya nggak akan pernah muncul di header chat). Lihat file user_presence.sql.
-  3) Ganti kunci enkripsi (CHAT_SECRET) di objek CONFIG di bawah sebelum dipakai.
+  2e) Jalankan juga keys.sql di SQL Editor (kunci enkripsi pesan per akun, tersimpan terenkripsi
+      oleh sandi masing-masing; tidak ada lagi kunci bersama di file ini). Tiap akun perlu masuk
+      sekali dengan versi ini; obrolan baru aktif setelah Er dan pasangannya masing-masing pernah masuk.
+  3) CHAT_SECRET di CONFIG tinggal kunci LAMA, hanya untuk membaca pesan lama (berawalan e:).
+     Setelah lewat MSG_TTL_H jam sejak semua orang memakai versi ini, kosongkan jadi ''.
   4) Upload SEMUA file ke hosting HTTPS dalam satu folder: index.html, manifest.webmanifest,
      sw.js, dan folder icons/. Tanpa HTTPS, enkripsi & pemasangan di layar utama tidak jalan.
 -->
@@ -764,6 +776,7 @@ section{position:absolute;inset:0}
       <div class="call-av" id="callAv"><span id="callAvIn"></span></div>
       <b id="callName"></b>
       <span id="callStatus"></span>
+      <span id="callQ" hidden></span>
     </div>
     <div class="call-acts" id="callActsRing">
       <button class="cbtn end" id="callDecline" aria-label="Tolak"></button>
@@ -773,6 +786,7 @@ section{position:absolute;inset:0}
       <button class="cbtn" id="callMicBtn" aria-label="Mikrofon"></button>
       <button class="cbtn" id="callCamBtn" aria-label="Kamera"></button>
       <button class="cbtn" id="callFlipBtn" aria-label="Ganti kamera"></button>
+      <button class="cbtn" id="callSpkBtn" aria-label="Speaker" hidden></button>
       <button class="cbtn end" id="callEndBtn" aria-label="Tutup panggilan"></button>
     </div>
   </div>
@@ -799,12 +813,13 @@ const CONFIG = {
     er:     'er@ruangkita.app'
   },
 
-  // Kunci enkripsi pesan (harus SAMA di semua HP). GANTI dengan kalimat rahasia kalian.
+  // Kunci LAMA (hanya untuk membaca pesan lama yang berawalan e:). Pesan baru TIDAK memakainya.
+  // Isi dengan nilai yang selama ini kalian pakai; setelah pesan lama kedaluwarsa (MSG_TTL_H jam), kosongkan: ''.
+  // Catatan: selama nilai ini masih ada di file yang dihosting, pesan lama (bukan yang baru) masih bisa dibuka orang yang punya file ini.
   CHAT_SECRET: 'ganti-kalimat-rahasia-kalian-ini-yang-panjang-2026',
 
-  // Sandi PALSU (membuka kumpulan puisi, tanpa terhubung ke server). Default:
-  //   Saskia palsu : saskia000  |  Selpia palsu : selpia000  |  Er palsu : er000000
-  // Untuk membuat hash baru: buka console browser lalu ketik  buatHash('sandibaru')
+  // Sandi PALSU (membuka kumpulan puisi, tanpa terhubung ke server).
+  // Buat hash baru: buka console browser lalu ketik  buatHash('sandibaru')  dan tempel hasilnya di bawah.
   SALT: 'SKER::v1::',
   DECOY_HASHES: {
     'e5680ce0ae7dabd31656f3312ace4013ab7a8e99ca814ac4e9cda2fb9d4a4082': { user: 'saskia', mode: 'decoy' },
@@ -830,6 +845,7 @@ const CONFIG = {
   CALL_ICE_SERVERS: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' }
+    // ,{ urls: ['turn:ALAMAT:80', 'turn:ALAMAT:443?transport=tcp', 'turns:ALAMAT:443?transport=tcp'], username: 'USERNAME', credential: 'PASSWORD' }
   ],
   CALL_RING_MS: 45000        // batas dering sebelum panggilan dibatalkan otomatis (ms)
 };
@@ -1025,30 +1041,223 @@ async function sha256(s) {
 }
 window.buatHash = async pw => { const h = await sha256(CONFIG.SALT + pw); console.log(h); return h; };
 
-/* ---------- Enkripsi AES-GCM ---------- */
+/* ---------- Enkripsi pesan ----------
+   Kunci pesan TIDAK lagi ditulis di file ini. Cara kerjanya:
+   - Tiap akun punya sepasang kunci ECDH (P-256). Kunci privatnya disimpan di Supabase (tabel user_keys)
+     dalam keadaan terenkripsi oleh sandi akun itu sendiri (PBKDF2 + AES-GCM). Server tidak bisa membukanya.
+   - Tiap ruang (saskia-er, selpia-er) punya satu kunci AES-256 acak. Kunci ruang dibungkus untuk kedua
+     anggotanya (ECDH antar-anggota) dan disimpan di tabel room_keys.
+   - Pesan baru berawalan 'k:'. Pesan lama berawalan 'e:' (kunci lama dari CONFIG.CHAT_SECRET) tetap bisa
+     dibaca selama CHAT_SECRET tidak dikosongkan.
+   - Kunci ruang hanya ada di memori (dan sessionStorage tab ini selama sesi), dihapus saat dikunci. */
+const KDF_ITER = 250000, ECDH_P = { name: 'ECDH', namedCurve: 'P-256' };
+const KEYS = { uid: null, priv: null, privJwk: null, pubJwk: null, raw: {}, aes: {}, off: false, pendingPw: null };
+const roomsOf = u => u === 'er' ? Object.keys(CONFIG.ACCOUNTS).filter(x => x !== 'er') : [u];
+const partnerOf = (u, r) => u === 'er' ? r : 'er';
+const pubOf = j => ({ kty: j.kty, crv: j.crv, x: j.x, y: j.y });
+const isNoTable = e => /relation|PGRST205|42P01|schema cache/.test(JSON.stringify(e) + ((e && e.message) || ''));
+function b64e(bytes) { let s = ''; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(s); }
+function b64d(str) { const s = atob(str), a = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) a[i] = s.charCodeAt(i); return a; }
+
+async function aesSeal(key, bytes, aad) {
+  const iv = crypto.getRandomValues(new Uint8Array(12)), p = { name: 'AES-GCM', iv };
+  if (aad) p.additionalData = te.encode(aad);
+  const ct = new Uint8Array(await crypto.subtle.encrypt(p, key, bytes));
+  const out = new Uint8Array(12 + ct.length); out.set(iv); out.set(ct, 12);
+  return b64e(out);
+}
+async function aesOpen(key, b64, aad) {
+  const raw = b64d(b64), p = { name: 'AES-GCM', iv: raw.slice(0, 12) };
+  if (aad) p.additionalData = te.encode(aad);
+  return new Uint8Array(await crypto.subtle.decrypt(p, key, raw.slice(12)));
+}
+async function pwKey(pw, salt) {
+  const base = await crypto.subtle.importKey('raw', te.encode(pw), 'PBKDF2', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: KDF_ITER, hash: 'SHA-256' },
+    base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}
+async function wrapAesFor(privKey, pubJwk) {
+  const pub = await crypto.subtle.importKey('jwk', pubOf(pubJwk), ECDH_P, false, []);
+  return crypto.subtle.deriveKey({ name: 'ECDH', public: pub }, privKey, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}
+function setRoomRaw(r, raw) { KEYS.raw[r] = raw; KEYS.aes[r] = null; }
+async function roomAes(r) {
+  if (!KEYS.aes[r]) KEYS.aes[r] = await crypto.subtle.importKey('raw', KEYS.raw[r], 'AES-GCM', false, ['encrypt', 'decrypt']);
+  return KEYS.aes[r];
+}
+function wipeKeys() {
+  KEYS.uid = null; KEYS.priv = null; KEYS.privJwk = null; KEYS.pubJwk = null; KEYS.raw = {}; KEYS.aes = {}; KEYS.off = false; KEYS.pendingPw = null;
+  try { sessionStorage.removeItem('sk_kc'); } catch (e) {}
+}
+function keyCacheSave() {
+  try {
+    if (!KEYS.uid) return;
+    const rooms = {}; for (const r in KEYS.raw) rooms[r] = b64e(KEYS.raw[r]);
+    sessionStorage.setItem('sk_kc', JSON.stringify({ u: KEYS.uid, off: KEYS.off, priv: KEYS.privJwk, rooms }));
+  } catch (e) {}
+}
+// Dipakai saat halaman dimuat ulang dalam jeda kunci-otomatis: sandi tidak diketik lagi, jadi ambil dari sessionStorage.
+async function keyCacheLoad(u) {
+  try {
+    const c = JSON.parse(sessionStorage.getItem('sk_kc') || 'null');
+    if (!c || c.u !== u) return false;
+    wipeKeys(); KEYS.uid = u; KEYS.off = !!c.off;
+    if (c.priv) { KEYS.privJwk = c.priv; KEYS.pubJwk = pubOf(c.priv); KEYS.priv = await crypto.subtle.importKey('jwk', c.priv, ECDH_P, false, ['deriveKey']); }
+    for (const r in (c.rooms || {})) setRoomRaw(r, b64d(c.rooms[r]));
+    if (KEYS.off || KEYS.priv) { keyCacheSave(); return true; }
+    wipeKeys(); return false;
+  } catch (e) { wipeKeys(); return false; }
+}
+async function storePrivKey(u, pw) {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const enc_priv = await aesSeal(await pwKey(pw, salt), te.encode(JSON.stringify(KEYS.privJwk)));
+  const r = await sb.from('user_keys').upsert({ user_id: u, pub: KEYS.pubJwk, salt: b64e(salt), enc_priv, updated_at: new Date().toISOString() });
+  if (r.error) throw r.error;
+}
+async function putRoomRow(r, who, pubJwk, raw, sender) {
+  try {
+    const wrapped = await aesSeal(await wrapAesFor(KEYS.priv, pubJwk), raw, 'sk-room:' + r);
+    const x = await sb.from('room_keys').insert({ room: r, for_user: who, sender, wrapped });
+    if (x.error && x.error.code !== '23505') console.warn('[kunci] gagal menyimpan kunci ruang:', x.error.message || x.error);
+  } catch (e) { console.warn('[kunci] gagal membungkus kunci ruang:', e); }
+}
+/* Menyelaraskan kunci ruang. Aman dipanggil berulang. Mengembalikan true bila ada kunci ruang yang BARU didapat. */
+let keysBusy = false;
+async function syncKeys() {
+  if (KEYS.off || !KEYS.priv || !sb || keysBusy) return false;
+  keysBusy = true;
+  const u = KEYS.uid; let changed = false;
+  try {
+    const rooms = roomsOf(u);
+    const [pk, rk] = await Promise.all([
+      sb.from('user_keys').select('user_id,pub'),
+      sb.from('room_keys').select('room,for_user,sender,wrapped').in('room', rooms)]);
+    if (pk.error) throw pk.error;
+    if (rk.error) throw rk.error;
+    const pubs = {}; pk.data.forEach(x => { pubs[x.user_id] = x.pub; });
+    for (const r of rooms) {
+      const p = partnerOf(u, r), aad = 'sk-room:' + r;
+      const mine = rk.data.find(x => x.room === r && x.for_user === u);
+      const theirs = rk.data.find(x => x.room === r && x.for_user === p);
+      let raw = KEYS.raw[r] || null; const had = !!raw; let myOk = !!mine, createdNow = false;
+      if (!raw && mine) {
+        try {
+          if (!pubs[mine.sender]) throw new Error('pengirim tidak dikenal');
+          const o = await aesOpen(await wrapAesFor(KEYS.priv, pubs[mine.sender]), mine.wrapped, aad);
+          if (o.length !== 32) throw new Error('panjang kunci salah');
+          raw = o;
+        } catch (e) {
+          // bungkusan ini tidak bisa dibuka (pengirimnya sudah berganti kunci): hapus, pasangan akan membungkus ulang
+          raw = null; myOk = false;
+          await sb.from('room_keys').delete().eq('room', r).eq('for_user', u);
+        }
+      }
+      // Belum ada kunci ruang sama sekali (kedua baris kosong) dan kedua kunci publik sudah ada: buat.
+      if (!raw && !myOk && !theirs && pubs[u] && pubs[p]) {
+        const K = crypto.getRandomValues(new Uint8Array(32)), rows = [];
+        for (const [who, pj] of [[u, pubs[u]], [p, pubs[p]]])
+          rows.push({ room: r, for_user: who, sender: u, wrapped: await aesSeal(await wrapAesFor(KEYS.priv, pj), K, aad) });
+        const ins = await sb.from('room_keys').insert(rows);
+        if (!ins.error) { raw = K; myOk = true; createdNow = true; }
+        else if (ins.error.code !== '23505') throw ins.error;   // 23505: pasangan mendahului, ambil di putaran berikutnya
+      }
+      if (raw) {
+        if (!had) changed = true;
+        setRoomRaw(r, raw);
+        if (!createdNow) {
+          if (!myOk && pubs[u]) await putRoomRow(r, u, pubs[u], raw, u);
+          if (!theirs && pubs[p]) await putRoomRow(r, p, pubs[p], raw, u);
+          // simpan bungkusan yang dibuat dengan kunciku sendiri, supaya tidak ikut hilang bila pasangan ganti kunci
+          if (!had && mine && myOk && mine.sender !== u && pubs[u]) {
+            try {
+              await sb.from('room_keys').update({ sender: u, wrapped: await aesSeal(await wrapAesFor(KEYS.priv, pubs[u]), raw, aad) }).eq('room', r).eq('for_user', u);
+            } catch (e) {}
+          }
+        }
+      }
+    }
+    return changed;
+  } finally { keysBusy = false; }
+}
+/* Dipanggil setelah sandi benar (saat masuk). Membuka/membuat kunci akun lalu menyelaraskan kunci ruang. */
+async function setupKeys(u, pw) {
+  wipeKeys(); KEYS.uid = u;
+  if (!hasSubtle) { wipeKeys(); return { ok: false, msg: 'Enkripsi butuh HTTPS. Buka lewat alamat https://' }; }
+  if (!sb) { wipeKeys(); return { ok: false, msg: 'Tidak bisa terhubung. Periksa internet.' }; }
+  try {
+    const q = await sb.from('user_keys').select('user_id,pub,salt,enc_priv').eq('user_id', u).maybeSingle();
+    if (q.error) throw q.error;
+    let jwk = null;
+    if (q.data) {
+      try { jwk = JSON.parse(td.decode(await aesOpen(await pwKey(pw, b64d(q.data.salt)), q.data.enc_priv))); } catch (e) { jwk = null; }
+    }
+    if (jwk) { KEYS.privJwk = jwk; KEYS.pubJwk = pubOf(jwk); }
+    else {
+      // akun baru, atau sandi pernah diganti dari luar aplikasi (mis. lewat dashboard): buat kunci baru
+      const kp = await crypto.subtle.generateKey(ECDH_P, true, ['deriveKey']);
+      const j = await crypto.subtle.exportKey('jwk', kp.privateKey);
+      KEYS.privJwk = { kty: j.kty, crv: j.crv, x: j.x, y: j.y, d: j.d }; KEYS.pubJwk = pubOf(j);
+      await storePrivKey(u, pw);
+      await sb.from('room_keys').delete().eq('for_user', u);   // bungkusan lama untuk kunci lama tak berlaku lagi
+    }
+    KEYS.priv = await crypto.subtle.importKey('jwk', KEYS.privJwk, ECDH_P, false, ['deriveKey']);
+    await syncKeys();
+    keyCacheSave();
+    return { ok: true };
+  } catch (e) {
+    if (isNoTable(e)) { wipeKeys(); KEYS.uid = u; KEYS.off = true; keyCacheSave(); return { ok: true, off: true }; }
+    console.warn('[kunci] setup gagal:', e);
+    wipeKeys();
+    return { ok: false, msg: 'Kunci obrolan belum bisa disiapkan. Periksa internet lalu coba lagi.' };
+  }
+}
+
+/* Enkripsi / dekripsi isi pesan. r = nama ruang (default: ruang yang sedang dibuka). */
 let aesKey = null;
-async function getKey() {
+async function legacyKey() {
   if (aesKey) return aesKey;
+  if (!CONFIG.CHAT_SECRET) throw new Error('kunci lama sudah dinonaktifkan');
   const base = await crypto.subtle.importKey('raw', te.encode(CONFIG.CHAT_SECRET), 'PBKDF2', false, ['deriveKey']);
   aesKey = await crypto.subtle.deriveKey({ name:'PBKDF2', salt: te.encode('sk-er::chat'), iterations: 120000, hash:'SHA-256' },
     base, { name:'AES-GCM', length: 256 }, false, ['encrypt','decrypt']);
   return aesKey;
 }
-function b64e(bytes) { let s = ''; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(s); }
-function b64d(str) { const s = atob(str), a = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) a[i] = s.charCodeAt(i); return a; }
-async function enc(str) {
+async function encLegacy(str) {   // hanya dipakai bila tabel kunci belum dibuat (keys.sql belum dijalankan)
   if (!hasSubtle) return 'p:' + b64e(te.encode(str));
-  const k = await getKey(), iv = crypto.getRandomValues(new Uint8Array(12));
+  const k = await legacyKey(), iv = crypto.getRandomValues(new Uint8Array(12));
   const ct = new Uint8Array(await crypto.subtle.encrypt({ name:'AES-GCM', iv }, k, te.encode(str)));
   const out = new Uint8Array(12 + ct.length); out.set(iv); out.set(ct, 12);
   return 'e:' + b64e(out);
 }
-async function dec(s) {
+function noKey() { const e = new Error('kunci obrolan belum siap'); e.nokey = true; return e; }
+async function enc(str, r) {
+  r = r || room;
+  if (KEYS.off) return encLegacy(str);
+  if (!KEYS.raw[r]) throw noKey();
+  return 'k:' + await aesSeal(await roomAes(r), te.encode(str));
+}
+async function dec(s, r) {
   if (!s) return '';
+  r = r || room;
   const t = s.slice(0, 2), d = s.slice(2);
   if (t === 'p:') return td.decode(b64d(d));
-  const k = await getKey(), raw = b64d(d);
+  if (t === 'k:') {
+    if (!KEYS.raw[r]) throw noKey();
+    return td.decode(await aesOpen(await roomAes(r), d));
+  }
+  const k = await legacyKey(), raw = b64d(d);
   return td.decode(await crypto.subtle.decrypt({ name:'AES-GCM', iv: raw.slice(0, 12) }, k, raw.slice(12)));
+}
+let keyN = 0, keyPwBusy = false;
+function keyTick() {
+  if (KEYS.off || !KEYS.priv || decoy) return;
+  keyN++;
+  if (KEYS.pendingPw && !keyPwBusy) {
+    keyPwBusy = true;
+    storePrivKey(KEYS.uid, KEYS.pendingPw).then(() => { KEYS.pendingPw = null; }).catch(() => {}).then(() => { keyPwBusy = false; });
+  }
+  if (!roomsOf(KEYS.uid).every(r => KEYS.raw[r]) || keyN % 4 === 0)
+    syncKeys().then(ch => { if (ch) { keyCacheSave(); scheduleSync(0); retryFailed(); } }).catch(() => {});
 }
 
 /* ---------- Suara ---------- */
@@ -1076,6 +1285,7 @@ let msgs = [], seen = new Set(), textCache = new Map();
 let justDeliveredIds = new Set(); // id pesan yang baru saja ditandai "diterima" pada siklus sync ini — ditunda dari "dibaca" 1 siklus
 let partnerOnline = false, typingUntil = 0, lastTypeSent = 0;
 let partnerLastSeen = 0, lastSeenReady = false, presenceBusy = false;
+var unreadMarkRoom = null, unreadMarkId = null;
 let stick = true, unread = 0, lastSig = '', firstRender = true, firstSync = true;
 let shieldOff = false, hiddenAt = 0, V = null, syncing = false, syncQueued = false, syncTimer = null;
 let pollT = null, tickT = null, lastClean = 0, lgFails = 0, lgLock = 0, pendingPhoto = null;
@@ -1183,6 +1393,13 @@ function tickIcon(m) {
   return `<span class="ticks" title="Terkirim"><i></i></span>`;
 }
 const nameOf = m => m.sender === me ? USERS[me].own : partnerView().name;   // nama sendiri / nama lawan chat (sesuai tampilan masing-masing akun)
+function linkify(t) {
+  return esc(t).replace(/(https?:\/\/[^\s<]+)/g, u => {
+    let tail = ''; const mt = u.match(/(?:&(?:amp|lt|gt|quot|#39);|[.,;:!?)\]}'"])+$/); if (mt) { tail = mt[0]; u = u.slice(0, -tail.length); }
+    if (!u) return tail;
+    return `<a class="ml" href="${u}" target="_blank" rel="noopener noreferrer">${u}</a>${tail}`;
+  });
+}
 function quoteHTML(m) {
   if (!m.reply_to) return '';
   const o = msgs.find(x => x.id === m.reply_to);
@@ -1249,7 +1466,7 @@ function rowHTML(m, first, last, enter, delay) {
     return `<div class="${cls}" data-id="${m.id}"${st}><div class="b tomb${m._fresh ? ' in' : ''}">${I.trash}<span>Pesan ini sudah dihapus</span><span class="meta" style="margin:0 0 0 4px">${fmtTime(m.created_at)}</span></div></div>`;
   }
   if (m.kind === 'text') {
-    return `<div class="${cls}" data-id="${m.id}"${st}>${rico}<div class="b${m.failed ? ' failed' : ''}">${nm}${q}${esc(m.body || '')}${meta}${rbtn}${reactChip(m)}</div></div>`;
+    return `<div class="${cls}" data-id="${m.id}"${st}>${rico}<div class="b${m.failed ? ' failed' : ''}">${nm}${q}${linkify(m.body || '')}${meta}${rbtn}${reactChip(m)}</div></div>`;
   }
   if (m.kind === 'audio') {
     let a; try { a = JSON.parse(m.body || '{}'); } catch (e) { a = {}; }
@@ -1312,6 +1529,7 @@ function renderInner(opts) {
   msgs.forEach((m, i) => {
     const d = dayLabel(m.created_at);
     if (d !== lastDay) { wanted.push({ key: 'day:' + m.id, kind: 'day', label: d }); lastDay = d; }
+    if (!decoy && unreadMarkId && m.id === unreadMarkId && m.sender !== me) wanted.push({ key: 'unread:' + m.id, kind: 'day', cls: 'day unreadline', label: 'Pesan belum dibaca' });
     const pv = msgs[i - 1], nx = msgs[i + 1];
     const gap = (a, b) => Math.abs(new Date(b.created_at) - new Date(a.created_at));
     const first = !pv || callInfo(pv) || callInfo(m) || pv.sender !== m.sender || dayLabel(pv.created_at) !== d || gap(pv, m) > 180000;
@@ -1330,7 +1548,7 @@ function renderInner(opts) {
     let el = existing.get(key);
     if (el) existing.delete(key);
     if (w.kind === 'day') {
-      if (!el) { el = document.createElement('div'); el.className = 'day'; el.dataset.key = key; }
+      if (!el) { el = document.createElement('div'); el.className = w.cls || 'day'; el.dataset.key = key; }
       const wantHtml = `<span>${w.label}</span>`;
       if (el.innerHTML !== wantHtml) el.innerHTML = wantHtml;
     } else if (!el || el.dataset.rsig !== w.rsig) {
@@ -1474,7 +1692,7 @@ async function cacheSaveRoom(r, list) {
       req.onsuccess = e => {
         const c = e.target.result;
         if (c) { if (!keep.has(c.value.id)) c.delete(); c.continue(); }
-        else { list.forEach(m => os.put(cacheSanitize(m))); res(); }
+        else { list.forEach(m => { if (!m.nokey) os.put(cacheSanitize(m)); }); res(); }
       };
       req.onerror = () => res();
       tx.onerror = () => res();
@@ -1576,13 +1794,19 @@ async function sync() {
         if (r.photo_gone) markDeleted(r.id);   // dihapus untuk semua: tampilkan penanda "Pesan ini sudah dihapus"
         else if (r.delete_req_at && r.sender === me) { markDeleted(r.id); r.photo_gone = true; }   // sisi pengirim: langsung tampil terhapus
       }
-      let body = null;
+      let body = null, nk = false;
       if ((r.kind === 'text' || r.kind === 'audio') && r.photo_gone) body = '';
       else if (r.kind === 'text' || r.kind === 'audio') {
         body = textCache.get(r.id);
-        if (body === undefined) { try { body = await dec(r.body); } catch (e) { body = r.kind === 'audio' ? '{}' : 'Pesan tidak bisa dibuka'; } textCache.set(r.id, body); }
+        if (body === undefined) {
+          try { body = await dec(r.body, r.room || room); textCache.set(r.id, body); }
+          catch (e) {
+            if (e && e.nokey) { nk = true; body = r.kind === 'audio' ? '{}' : 'Menunggu kunci obrolan…'; }   // sementara: jangan disimpan, coba lagi saat kunci siap
+            else { body = r.kind === 'audio' ? '{}' : 'Pesan tidak bisa dibuka'; textCache.set(r.id, body); }
+          }
+        }
       }
-      const old = byId.get(r.id), m = Object.assign({}, r, { body, pending: false, failed: false, localAt: old ? old.localAt : 0, reactions: r.reactions || {} });
+      const old = byId.get(r.id), m = Object.assign({}, r, { body, nokey: nk, pending: false, failed: false, localAt: old ? old.localAt : 0, reactions: r.reactions || {} });
       if (old) { if (old.viewed_at && !m.viewed_at) m.viewed_at = old.viewed_at; if (old.delivered_at && !m.delivered_at) m.delivered_at = old.delivered_at; if (old.photo_gone) m.photo_gone = true; if ((old.view_count || 0) > (m.view_count || 0)) m.view_count = old.view_count; }
       out.push(m);
     }
@@ -1629,6 +1853,11 @@ async function maintain() {
     if (rcv === 'er') { if (m.viewed_at && now > +new Date(m.viewed_at) + ER_MS) wipe(m.id); }
     else if ((m.view_count || 0) >= CONFIG.PARTNER_PHOTO_VIEWS) wipe(m.id);
     else if (now > +new Date(m.created_at) + PARTNER_PHOTO_MS) wipe(m.id); // belum sampai dilihat 5x, tapi sudah lewat PARTNER_PHOTO_MAX_MIN sejak terkirim
+  }
+  if (!decoy && unreadMarkRoom !== room) {
+    unreadMarkRoom = room;
+    const fu = msgs.find(m => m.sender === partner && !callInfo(m) && ((m.kind === 'text' || m.kind === 'audio') ? (!m.read_at && !m.photo_gone) : (!m.viewed_at && !m.photo_gone)));
+    unreadMarkId = fu ? fu.id : null;
   }
   // tandai dibaca
   if (!document.hidden && !shieldOff) {
@@ -1748,7 +1977,7 @@ async function pushText(m) {
   if (!ensureClient()) { m.pending = false; m.failed = true; render({ force: true }); return; }
   m.pending = true; m.failed = false; render({ force: true });
   try {
-    const body = await enc(m.body);
+    const body = await enc(m.body, m.room);
     const { data, error } = await sb.from('messages').insert({ id: m.id, room: m.room, sender: me, kind: 'text', body, reply_to: m.reply_to || null }).select('created_at,expires_at').single();
     if (error) throw error;
     m.created_at = data.created_at; m.expires_at = data.expires_at; m.pending = false; m.localAt = Date.now();
@@ -1797,7 +2026,7 @@ async function pushPhoto(m) {
   if (!ensureClient()) { m.pending = false; m.failed = true; render({ force: true }); return; }
   m.pending = true; m.failed = false; render({ force: true });
   try {
-    const body = await enc(m._data);
+    const body = await enc(m._data, m.room);
     const { data, error } = await sb.from('messages').insert({ id: m.id, room: m.room, sender: me, kind: 'image', body, reply_to: m.reply_to || null }).select('created_at,expires_at').single();
     if (error) throw error;
     m.created_at = data.created_at; m.expires_at = data.expires_at; m.pending = false; m.localAt = Date.now(); delete m._data;
@@ -1871,7 +2100,7 @@ async function pushAudio(m) {
   if (!ensureClient()) { m.pending = false; m.failed = true; render({ force: true }); return; }
   m.pending = true; m.failed = false; render({ force: true });
   try {
-    const body = await enc(m.body);
+    const body = await enc(m.body, m.room);
     const { data, error } = await sb.from('messages').insert({ id: m.id, room: m.room, sender: me, kind: 'audio', body, reply_to: m.reply_to || null }).select('created_at,expires_at').single();
     if (error) throw error;
     m.created_at = data.created_at; m.expires_at = data.expires_at; m.pending = false; m.localAt = Date.now();
@@ -2041,7 +2270,17 @@ function msgMenu(id) {
   const m = msgs.find(x => x.id === id); if (!m) return;
   if (callInfo(m) || (m.kind !== 'image' && m.photo_gone)) return;   // riwayat panggilan & pesan terhapus tidak punya menu
   const REACT_EMOJI = ['❤️', '😂', '😮', '😢', '👍', '🔥'];
+  const tf = t => new Date(t).toLocaleString('id-ID', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
   let html = '';
+  if (!m.pending && !m.failed && m.created_at) {
+    let rows = `<div><span>Dikirim</span><b>${tf(m.created_at)}</b></div>`;
+    if (m.sender === me && !decoy) {
+      if (m.delivered_at) rows += `<div><span>Diterima</span><b>${tf(m.delivered_at)}</b></div>`;
+      if (m.kind === 'image') { if (m.viewed_at) rows += `<div><span>Dilihat</span><b>${tf(m.viewed_at)}</b></div>`; }
+      else if (m.read_at) rows += `<div><span>Dibaca</span><b>${tf(m.read_at)}</b></div>`;
+    }
+    html += `<div class="msg-info">${rows}</div>`;
+  }
   if (!m.pending && !m.failed) {
     const mine = (m.reactions || {})[me] || '';
     html += `<div class="react-bar">${REACT_EMOJI.map(em => `<button type="button" class="react-op${em === mine ? ' on' : ''}" data-act="react" data-id="${id}" data-emoji="${esc(em)}">${em}</button>`).join('')}</div>`;
@@ -2136,7 +2375,7 @@ async function openPhoto(id) {
     }
     if (V !== token) return;
     if (!data || data.photo_gone || !data.body) { closeViewer(true); m.photo_gone = true; m._fresh = true; render(); toast('Foto sudah hilang'); return; }
-    const url = await dec(data.body);
+    const url = await dec(data.body, m.room || room);
     if (V !== token) return;
     if (!mine) {
       if (!m.viewed_at) m.viewed_at = iso();
@@ -2400,7 +2639,14 @@ async function savePw() {
       const code = r2.error.code || '';
       return fail(r2.error, code === 'same_password' ? 'Sandi baru harus berbeda dari yang lama.' : code === 'weak_password' ? 'Sandi terlalu lemah. Tambahkan huruf, angka, atau simbol.' : 'Gagal mengganti sandi.');
     }
-    closeSheet(); toast('Sandi berhasil diganti'); vib(15);
+    // bungkus ulang kunci privat dengan sandi baru (kunci obrolan tetap sama)
+    let keyOk = true;
+    if (!KEYS.off && KEYS.privJwk) {
+      keyOk = false;
+      for (let i = 0; i < 3 && !keyOk; i++) { try { await storePrivKey(me, nw); keyOk = true; } catch (x) { await wait(700 * (i + 1)); } }
+      if (!keyOk) KEYS.pendingPw = nw;   // dicoba lagi otomatis selama aplikasi terbuka
+    }
+    closeSheet(); toast(keyOk ? 'Sandi berhasil diganti' : 'Sandi diganti. Kunci obrolan masih disinkronkan, biarkan aplikasi terbuka sebentar.'); vib(15);
   } catch (e) { msg('Koneksi bermasalah. Coba lagi.'); }
   finally { btn.disabled = false; }
 }
@@ -2813,7 +3059,7 @@ function enterChat() {
     msgs = msgs.filter(m => new Date(m.expires_at) > now || m.pending);
     render({ force: msgs.length !== before });
     if (!decoy) {
-      maintain(); loadNames();
+      maintain(); loadNames(); keyTick();
       if (!document.hidden) upsertPresence();   // "detak jantung" — aku masih aktif barusan
       if (!partnerOnline) loadLastSeen();        // selaraskan teks "terakhir online" secara berkala
     }
@@ -2841,7 +3087,7 @@ function lockApp() {
   const burning = !!(V && V.loaded && !V.isEr && !V.mine);
   closeViewer(false); closeSheet(); closeDrawer(); $('pv').classList.remove('open'); pendingPhoto = null; closeCamera(); cancelRecording();
   if (callState !== 'idle') endCall('lock');
-  teardown(); localStorage.removeItem('sk_sess'); hidePushAsk();
+  teardown(); wipeKeys(); localStorage.removeItem('sk_sess'); hidePushAsk();
   killSession(burning ? 1500 : 0); // beri waktu foto sekali-lihat terhapus dulu
   me = null; partner = null; room = null; msgs = []; list.innerHTML = ''; updateTabs(); shieldOff = false;
   partnerOnline = false; partnerLastSeen = 0; lastSeenReady = false;
@@ -2875,8 +3121,17 @@ async function tryLogin() {
         return;
       }
     }
+    if (acc.mode === 'real') {
+      // buka/siapkan kunci obrolan dari sandi yang baru diketik; gagal -> jangan masuk setengah jalan
+      const k = await setupKeys(acc.user, pw);
+      if (!k.ok) { killSession(0); await killing; shake(); $('pw').value = ''; setMsg(k.msg); return; }
+    }
     lgFails = 0; setMsg(''); $('pw').blur(); vib(20); tone([523, 659, 784]);
     startSession(acc, true);
+    if (acc.mode === 'real') {
+      if (KEYS.off) toast('Kunci pesan masih cara lama. Jalankan keys.sql di Supabase.');
+      else if (!roomsOf(acc.user).some(r => KEYS.raw[r])) toast('Kunci obrolan belum siap: pasangan perlu masuk sekali dulu. Setelah itu otomatis jalan.');
+    }
   } finally { loginBusy = false; $('lgBtn').disabled = false; }
 }
 function shake() { const b = $('pwbox'); b.classList.remove('shake'); void b.offsetWidth; b.classList.add('shake'); }
@@ -3000,6 +3255,7 @@ function callSignal(payload) { if (chan && rtOk) chan.send({ type: 'broadcast', 
 function fmtDur(s) { const m = Math.floor(s / 60); return m + ':' + String(s % 60).padStart(2, '0'); }
 
 function callUIReset() {
+  stopQuality(); spkOn = false;
   clearInterval(callDurT); callDurT = null; clearTimeout(callRingT); callRingT = null;
   const ov = $('callOv'); ov.className = ''; ov.classList.remove('open');
   $('callActsRing').hidden = false; $('callActsActive').hidden = true; $('callDur').hidden = true;
@@ -3030,6 +3286,7 @@ async function getCallMedia(video) {
   micOn = true; camOn = !!video; updateCallBtns();
 }
 function stopCallMedia() {
+  stopQuality();
   if (callLocalStream) { callLocalStream.getTracks().forEach(t => t.stop()); callLocalStream = null; }
   if (callPC) { try { callPC.close(); } catch (e) {} callPC = null; }
   callRemoteStream = null;
@@ -3049,9 +3306,9 @@ function createCallPC() {
       updateCallBtns();
       if (first && callState === 'active') { toast(callPartnerView().name + ' menyalakan kamera'); vib(10); }
     } else rv.hidden = !callIsVideo; // audio tetap diputar walau video disembunyikan
-    if (callState !== 'active') { callState = 'active'; callStartedAt = Date.now(); callShow('active'); callDurT = setInterval(callTick, 1000); vib(12); }
+    if (callState !== 'active') { callState = 'active'; callStartedAt = Date.now(); callShow('active'); callDurT = setInterval(callTick, 1000); startQuality(); vib(12); }
   };
-  pc.onconnectionstatechange = () => { if (['failed', 'closed'].includes(pc.connectionState) && callState !== 'idle') endCall('drop', false); };
+  pc.onconnectionstatechange = () => { if (['failed', 'closed'].includes(pc.connectionState) && callState !== 'idle') { if (pc.connectionState === 'failed' && !CONFIG.CALL_ICE_SERVERS.some(x => [].concat(x.urls).some(u => /^turns?:/.test(u)))) console.warn('[call] gagal tersambung & belum ada server TURN di CONFIG.CALL_ICE_SERVERS'); endCall('drop', false); } };
   callLocalStream.getTracks().forEach(t => pc.addTrack(t, callLocalStream));
   callPC = pc;
   return pc;
@@ -3064,7 +3321,42 @@ function updateCallBtns() {
   cb.hidden = false; fb.hidden = !hv;
   cb.classList.toggle('off', camOff); cb.innerHTML = camOff ? I.vcamoff : I.vcam;
   fb.innerHTML = I.flip;
+  const sb2 = $('callSpkBtn'); sb2.hidden = !SPK_OK; sb2.innerHTML = I.vol; sb2.classList.toggle('off', !spkOn);
 }
+var SPK_OK = typeof HTMLMediaElement !== 'undefined' && 'setSinkId' in HTMLMediaElement.prototype && !!(navigator.mediaDevices && navigator.mediaDevices.enumerateDevices);
+var spkOn = false, callQT = null, qPrev = null;
+async function toggleSpeaker() {
+  const rv = $('callRemoteVid');
+  try {
+    const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audiooutput');
+    const spk = devs.find(d => /speaker|pengeras/i.test(d.label)), def = devs.find(d => d.deviceId === 'default') || devs[0];
+    const target = spkOn ? def : spk;
+    if (!target) { toast('Speaker tidak tersedia di perangkat ini'); return; }
+    await rv.setSinkId(target.deviceId); spkOn = !spkOn; updateCallBtns();
+    toast(spkOn ? 'Speaker dinyalakan' : 'Speaker dimatikan');
+  } catch (e) { toast('Gagal mengganti speaker'); }
+}
+function stopQuality() { clearInterval(callQT); callQT = null; qPrev = null; const q = $('callQ'); if (q) { q.hidden = true; q.textContent = ''; } }
+function startQuality() {
+  stopQuality();
+  callQT = setInterval(async () => {
+    const pc = callPC; if (!pc || callState !== 'active') return;
+    try {
+      const st = await pc.getStats(); let rtt = null, lost = 0, recv = 0;
+      st.forEach(r => {
+        if (r.type === 'candidate-pair' && (r.nominated || r.state === 'succeeded') && typeof r.currentRoundTripTime === 'number') rtt = r.currentRoundTripTime;
+        if (r.type === 'inbound-rtp' && !r.isRemote) { lost += r.packetsLost || 0; recv += r.packetsReceived || 0; }
+      });
+      let loss = 0;
+      if (qPrev) { const dl = Math.max(0, lost - qPrev.lost), dr = Math.max(0, recv - qPrev.recv); if (dl + dr > 0) loss = dl / (dl + dr); }
+      qPrev = { lost, recv };
+      const lvl = ((rtt !== null && rtt > .6) || loss > .1) ? 'bad' : (((rtt !== null && rtt > .3) || loss > .04) ? 'mid' : 'good');
+      const q = $('callQ'); q.hidden = false; q.dataset.l = lvl;
+      q.textContent = { good: 'Sambungan bagus', mid: 'Sambungan sedang', bad: 'Sambungan lemah' }[lvl];
+    } catch (e) {}
+  }, 3000);
+}
+$('callSpkBtn').addEventListener('click', toggleSpeaker);
 let makingOffer = false;
 // Negosiasi ulang di tengah panggilan (mis. menambah video ke panggilan suara)
 async function renegotiate() {
@@ -3128,7 +3420,7 @@ async function logCall(reason, connected) {
   }
   if (!c) return;
   try {
-    const row = { id, room: r, sender: me, kind: 'text', body: await enc(body) };
+    const row = { id, room: r, sender: me, kind: 'text', body: await enc(body, r) };
     let res = await c.from('messages').insert(row);
     if (res.error && res.error.code !== '23505') { await wait(2500); await c.from('messages').insert(row); }
   } catch (e) {}
@@ -3486,10 +3778,10 @@ vvUpdate();
       let who = null;
       const g = await sb.auth.getSession();
       if (g.data && g.data.session) { const r = await sb.rpc('app_user'); if (!r.error) who = r.data; }
-      if (who && USERS[who]) startSession({ user: who, mode: 'real' }, false);
-      else { localStorage.removeItem('sk_sess'); killSession(0); }
+      if (who && USERS[who] && await keyCacheLoad(who)) startSession({ user: who, mode: 'real' }, false);
+      else { localStorage.removeItem('sk_sess'); wipeKeys(); killSession(0); }
     } else {
-      localStorage.removeItem('sk_sess');
+      localStorage.removeItem('sk_sess'); wipeKeys();
       if (localStorage.getItem(AUTH_KEY)) { ensureClient(true); killSession(0); }
     }
   } catch (e) {}
