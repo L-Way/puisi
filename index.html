@@ -1962,6 +1962,19 @@ $('btnSend').addEventListener('click', () => {
   startRecording();
 });
 
+// Pesan galat yang jelas saat pengiriman gagal (sebelumnya semua galat ditelan dan hanya tampil pesan umum).
+function sendFail(e, label) {
+  console.warn('[kirim] gagal:', e);
+  const code = e && (e.code || e.status), msg = (e && e.message) || '';
+  let t;
+  if (e && e.nokey) t = 'Kunci obrolan belum siap: pasangan perlu masuk sekali dulu.';
+  else if (code === '42501' || /row-level security|permission denied/i.test(msg)) t = 'Ditolak server (izin/RLS). Periksa setup.sql.';
+  else if (code === 'PGRST204' || /column/i.test(msg)) t = 'Kolom tabel belum ada. Jalankan SQL tambahan di Supabase.';
+  else if (/relation|PGRST205|42P01/.test(code + ' ' + msg)) t = 'Tabel belum dibuat. Jalankan setup.sql di Supabase.';
+  else if (/JWT|PGRST30\d/.test(code + ' ' + msg)) t = 'Sesi berakhir. Masuk lagi.';
+  else t = label + ' gagal terkirim' + (msg || code ? ': ' + (msg || code) : '') + '. Ketuk untuk coba lagi.';
+  toast(t);
+}
 async function sendText() {
   const v = ta.value.trim(); if (!v) return;
   const rt = replyTo; cancelReply();
@@ -1982,7 +1995,7 @@ async function pushText(m) {
     if (error) throw error;
     m.created_at = data.created_at; m.expires_at = data.expires_at; m.pending = false; m.localAt = Date.now();
     render({ force: true });
-  } catch (e) { m.pending = false; m.failed = true; render({ force: true }); toast('Pesan gagal terkirim. Ketuk pesan untuk coba lagi.'); }
+  } catch (e) { m.pending = false; m.failed = true; render({ force: true }); sendFail(e, 'Pesan'); }
 }
 
 /* ---------- Foto: pilih, kompres, kirim ---------- */
@@ -2031,7 +2044,7 @@ async function pushPhoto(m) {
     if (error) throw error;
     m.created_at = data.created_at; m.expires_at = data.expires_at; m.pending = false; m.localAt = Date.now(); delete m._data;
     render({ force: true });
-  } catch (e) { m.pending = false; m.failed = true; render({ force: true }); toast('Foto gagal terkirim. Ketuk foto untuk coba lagi.'); }
+  } catch (e) { m.pending = false; m.failed = true; render({ force: true }); sendFail(e, 'Foto'); }
 }
 
 /* ---------- Suara: rekam & kirim ---------- */
@@ -2105,7 +2118,7 @@ async function pushAudio(m) {
     if (error) throw error;
     m.created_at = data.created_at; m.expires_at = data.expires_at; m.pending = false; m.localAt = Date.now();
     render({ force: true });
-  } catch (e) { m.pending = false; m.failed = true; render({ force: true }); toast('Pesan suara gagal terkirim. Ketuk pesan untuk coba lagi.'); }
+  } catch (e) { m.pending = false; m.failed = true; render({ force: true }); sendFail(e, 'Pesan suara'); }
 }
 function audioEl(id) { return list.querySelector(`audio[data-a="${id}"]`); }
 // Kirim ulang otomatis pesan yang tadinya gagal terkirim (mis. karena koneksi putus),
