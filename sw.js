@@ -38,8 +38,11 @@ self.addEventListener('push', event => {
   let data = {};
   try { data = event.data ? event.data.json() : {}; } catch (e) {}
   const room = (data.room === 'saskia' || data.room === 'selpia') ? data.room : null;
-  const title = data.title || 'Puisi';
-  const body = data.body || 'Ada yang baru untukmu.';
+  /* Teks selalu bernuansa puisi, apa pun yang dikirim server, supaya notifikasi
+     tidak terlihat seperti pesan obrolan. */
+  const BODIES = ['Ada puisi baru untukmu.', 'Satu puisi menunggu dibaca.', 'Puisi untuk hari ini.'];
+  const title = 'Puisi';
+  const body = BODIES[Math.floor(Math.random() * BODIES.length)];
   const tag = room ? 'rk-' + room : 'rk-msg';
   event.waitUntil((async () => {
     await self.registration.showNotification(title, {
