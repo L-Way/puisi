@@ -734,6 +734,7 @@ section{position:absolute;inset:0}
       <button class="ib" id="vClose" aria-label="Tutup"></button>
       <div class="vinfo"><b id="vT"></b><span id="vS"></span></div>
       <button class="ib" id="vDl" aria-label="Unduh" hidden></button>
+      <button class="ib" id="vDel" aria-label="Hapus foto" hidden></button>
     </div>
     <div class="vstage" id="vStage"></div>
   </div>
@@ -814,7 +815,8 @@ const CONFIG = {
   PRIVATE_CHANNELS: true,
 
   MSG_TTL_H: 24,             // pesan hilang setelah (jam)
-  ER_PHOTO_MIN: 60,          // foto untuk Er bertahan (menit) setelah dibuka
+  MSG_AFTER_READ_H: 3,       // pesan teks/suara hilang otomatis sekian jam SETELAH dibaca
+  // Foto yang dikirim ke Er TIDAK hilang otomatis; hanya hilang jika Er menghapusnya.
   ER_DELETE_MIN: 2,          // pesan teks/suara yang dihapus pengirim ke Er: baru benar-benar hilang di sisi Er sekian menit SETELAH Er membacanya
   PARTNER_PHOTO_VIEWS: 5,    // foto kiriman Ganteng: maksimal berapa kali Saskia/Selpia boleh membukanya
   PARTNER_PHOTO_MAX_MIN: 60, // foto kiriman Ganteng: kalau belum sampai dilihat 5x, otomatis terhapus juga setelah sekian menit sejak terkirim
@@ -866,7 +868,9 @@ const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>'
 const iso = t => new Date(t === undefined ? Date.now() : t).toISOString();
 const wait = ms => new Promise(r => setTimeout(r, ms));
 const vib = p => { try { navigator.vibrate && navigator.vibrate(p); } catch (e) {} };
-const ER_MS = CONFIG.ER_PHOTO_MIN * 60000;
+const AFTER_READ_MS = CONFIG.MSG_AFTER_READ_H * 3600000;
+const ER_KEEP_MS = 10 * 365 * 86400000; // foto untuk Er: masa simpan sangat panjang
+const readGone = m => (m.kind === 'text' || m.kind === 'audio') && m.read_at && Date.now() > +new Date(m.read_at) + AFTER_READ_MS;
 const ER_DELETE_MS = CONFIG.ER_DELETE_MIN * 60000;
 const PARTNER_PHOTO_MS = CONFIG.PARTNER_PHOTO_MAX_MIN * 60000;
 const TTL_MS = CONFIG.MSG_TTL_H * 3600000;
@@ -1276,6 +1280,14 @@ let recording = false, mediaRec = null, recChunks = [], recStream = null, recSta
 let curAudio = null, curAudioId = null;
 const AUDIO_MAX_SEC = 120;
 let deletedIds = new Set((() => { try { return JSON.parse(localStorage.getItem('sk_deleted') || '[]'); } catch (e) { return []; } })());
+// Foto yang dikirim ke Er: kalau pengirim "menghapus", itu hanya menyembunyikannya di perangkat pengirim.
+// Di sisi Er foto tetap ada (hanya Er yang bisa menghapusnya untuk semua). Penanda disimpan di server (delete_req_at).
+let hiddenPhotos = new Set((() => { try { return JSON.parse(localStorage.getItem('sk_hidden') || '[]'); } catch (e) { return []; } })());
+function hidePhotoLocal(id) {
+  hiddenPhotos.add(id);
+  while (hiddenPhotos.size > 500) hiddenPhotos.delete(hiddenPhotos.values().next().value);
+  try { localStorage.setItem('sk_hidden', JSON.stringify([...hiddenPhotos])); } catch (e) {}
+}
 function markDeleted(id) {
   deletedIds.add(id);
   while (deletedIds.size > 500) deletedIds.delete(deletedIds.values().next().value);
@@ -1772,6 +1784,8 @@ async function sync() {
     const prevIds = new Set(msgs.map(m => m.id)), byId = new Map(msgs.map(m => [m.id, m]));
     const out = [];
     for (const r of rows) {
+      if (r.kind === 'image' && r.sender !== 'er' && (hiddenPhotos.has(r.id) || (r.delete_req_at && r.sender === me))) r.photo_gone = true;   // disembunyikan oleh pengirim, hanya di perangkat ini
+      if (readGone(r)) { sb.from('messages').delete().eq('id', r.id).then(() => {}); cacheDeleteMsg(r.id); continue; }
       if (r.kind === 'text' || r.kind === 'audio') {
         if (r.photo_gone) markDeleted(r.id);   // dihapus untuk semua: tampilkan penanda "Pesan ini sudah dihapus"
         else if (r.delete_req_at && r.sender === me) { markDeleted(r.id); r.photo_gone = true; }   // sisi pengirim: langsung tampil terhapus
@@ -1832,7 +1846,7 @@ async function maintain() {
     if (m.kind !== 'image' || m.photo_gone || m.pending) continue;
     if (V && V.id === m.id) continue; // sedang dibuka
     const rcv = m.sender === 'er' ? m.room : 'er';
-    if (rcv === 'er') { if (m.viewed_at && now > +new Date(m.viewed_at) + ER_MS) wipe(m.id); }
+    if (rcv === 'er') { /* foto untuk Er tidak pernah hilang otomatis */ }
     else if ((m.view_count || 0) >= CONFIG.PARTNER_PHOTO_VIEWS) wipe(m.id);
     else if (now > +new Date(m.created_at) + PARTNER_PHOTO_MS) wipe(m.id); // belum sampai dilihat 5x, tapi sudah lewat PARTNER_PHOTO_MAX_MIN sejak terkirim
   }
@@ -1852,6 +1866,9 @@ async function maintain() {
     if ((m.kind !== 'text' && m.kind !== 'audio') || m.photo_gone || !m.delete_req_at) continue;
     if (m.read_at && now > +new Date(m.read_at) + ER_DELETE_MS) finalizeDelete(m.id);
   }
+  // pesan yang sudah dibaca lebih dari MSG_AFTER_READ_H jam: hapus tuntas
+  for (const m of msgs.filter(readGone)) { sb.from('messages').delete().eq('id', m.id).then(() => {}); cacheDeleteMsg(m.id); }
+  if (msgs.some(readGone)) { msgs = msgs.filter(m => !readGone(m)); render({ force: true }); }
   // buang kadaluarsa
   if (now - lastClean > 120000) { lastClean = now; sb.from('messages').delete().lt('expires_at', iso()).then(() => {}); }
   // antrean hapus foto yang tertunda
@@ -2022,7 +2039,7 @@ async function pushPhoto(m) {
   m.pending = true; m.failed = false; render({ force: true });
   try {
     const body = await enc(m._data, m.room);
-    const { data, error } = await sb.from('messages').insert({ id: m.id, room: m.room, sender: me, kind: 'image', body, reply_to: m.reply_to || null }).select('created_at,expires_at').single();
+    const { data, error } = await sb.from('messages').insert({ id: m.id, room: m.room, sender: me, kind: 'image', body, reply_to: m.reply_to || null, ...(partner === 'er' ? { expires_at: iso(Date.now() + ER_KEEP_MS) } : {}) }).select('created_at,expires_at').single();
     if (error) throw error;
     m.created_at = data.created_at; m.expires_at = data.expires_at; m.pending = false; m.localAt = Date.now(); delete m._data;
     render({ force: true });
@@ -2153,6 +2170,7 @@ list.addEventListener('timeupdate', e => {
 /* ---------- Interaksi daftar pesan ---------- */
 list.addEventListener('click', e => {
   if (Date.now() - lastSwipeAt < 250) return; // abaikan klik yang terpicu setelah geser
+  if (Date.now() - lpFiredAt < 600) return;   // abaikan klik yang terpicu setelah tekan-lama (menu)
   const rb = e.target.closest('[data-reply]');
   if (rb) { vib(8); startReply(rb.dataset.reply); return; }
   const cbk = e.target.closest('[data-callback]');
@@ -2178,12 +2196,12 @@ list.addEventListener('click', e => {
     if (m && m.failed) { m.kind === 'text' ? pushText(m) : m.kind === 'audio' ? pushAudio(m) : pushPhoto(m); }
   }
 });
-let lp = null, lpXY = null;
+let lp = null, lpXY = null, lpFiredAt = 0;
 list.addEventListener('pointerdown', e => {
   if (decoy) return;
   const b = e.target.closest('.row[data-id] .b'); if (!b || e.target.closest('[data-reply]')) return;
   const id = b.closest('.row').dataset.id; lpXY = { x: e.clientX, y: e.clientY };
-  lp = setTimeout(() => { lp = null; vib(15); msgMenu(id); }, 480);
+  lp = setTimeout(() => { lp = null; lpFiredAt = Date.now(); vib(15); msgMenu(id); }, 480);
 });
 list.addEventListener('pointermove', e => { if (lp && lpXY && Math.hypot(e.clientX - lpXY.x, e.clientY - lpXY.y) > 9) { clearTimeout(lp); lp = null; } });
 ['pointerup', 'pointercancel', 'pointerleave'].forEach(ev => list.addEventListener(ev, () => { clearTimeout(lp); lp = null; }));
@@ -2282,7 +2300,7 @@ function msgMenu(id) {
   }
   html += `<button class="it" data-act="reply" data-id="${id}">${I.reply}<span>Balas pesan</span></button>`;
   if (m.kind === 'text' && m.body && !m.failed) html += `<button class="it" data-act="copymsg" data-id="${id}">${I.clip}<span>Salin teks</span></button>`;
-  if (m.sender === me) html += `<button class="it dng" data-act="del" data-id="${id}">${I.trash}<span>Hapus pesan untuk semua</span></button>`;
+  if (m.sender === me || (me === 'er' && m.kind === 'image')) html += `<button class="it dng" data-act="del" data-id="${id}">${I.trash}<span>${(m.kind === 'image' && m.sender !== 'er' && me !== 'er') ? 'Hapus dari saya' : 'Hapus pesan untuk semua'}</span></button>`;
   openSheet(html);
 }
 async function copyMsgText(id) {
@@ -2316,6 +2334,7 @@ async function deleteMsg(id) {
   if (m.pending) { toast('Tunggu pesannya terkirim dulu'); return; }
   if (m.failed) { msgs = msgs.filter(x => x.id !== id); textCache.delete(id); render({ force: true }); return; }   // belum pernah terkirim: buang saja
   const txt = m.kind === 'text' || m.kind === 'audio';
+  const localOnly = m.kind === 'image' && m.sender !== 'er' && me !== 'er';   // foto kiriman untuk Er: hapus hanya dari sisi pengirim
   // Pesan teks/suara yang dikirim KE Er: di sisi pengirim langsung jadi "sudah dihapus", tapi di sisi Er
   // baru berubah ER_DELETE_MIN menit SETELAH Er membacanya (dicek berkala di maintain()).
   const delayed = txt && m.sender !== 'er';
@@ -2326,10 +2345,26 @@ async function deleteMsg(id) {
   m.photo_gone = true; m.body = txt ? '' : null; m._fresh = true; if (txt) textCache.set(id, '');
   cacheSaveRoom(room, msgs);
   render({ force: true });
+  if (localOnly) {
+    // tandai di server (delete_req_at) supaya tersembunyi di SEMUA perangkat pengirim; sisi Er tidak berubah
+    hidePhotoLocal(id);
+    try {
+      const r = await sb.from('messages').update({ delete_req_at: iso() }).eq('id', id).select('id');
+      if (r.error || !r.data || !r.data.length) throw (r.error || new Error('0 rows'));
+    } catch (e) { toast('Belum tersimpan di server, coba lagi nanti'); }
+    return;
+  }
   try {
     if (delayed) await sb.from('messages').update({ delete_req_at: iso() }).eq('id', id);
-    else await sb.from('messages').update({ body: null, photo_gone: true }).eq('id', id);
-  } catch (e) {}
+    else {
+      const r = await sb.from('messages').update({ body: null, photo_gone: true }).eq('id', id).select('id');
+      if (r.error || !r.data || !r.data.length) throw (r.error || new Error('0 rows'));
+    }
+  } catch (e) {
+    // gagal di server: antrikan supaya dicoba lagi (sk_burn dijalankan ulang), dan beri tahu
+    try { const q = JSON.parse(localStorage.getItem('sk_burn') || '[]'); if (!q.includes(id)) q.push(id); localStorage.setItem('sk_burn', JSON.stringify(q)); } catch (x) {}
+    toast('Belum terhapus di server, akan dicoba lagi');
+  }
 }
 
 /* =====================================================================
@@ -2342,7 +2377,6 @@ async function openPhoto(id) {
   if (m.photo_gone) { if (mine) toast('Foto sudah tidak tersedia'); return; }
   const isEr = me === 'er';
   if (!mine) {
-    if (isEr && m.viewed_at && Date.now() > +new Date(m.viewed_at) + ER_MS) { wipe(id); toast('Foto sudah hilang'); return; }
     if (!isEr && (m.view_count || 0) >= CONFIG.PARTNER_PHOTO_VIEWS) { wipe(id); toast('Foto sudah hilang'); return; }
     if (!isEr && Date.now() > +new Date(m.created_at) + PARTNER_PHOTO_MS) { wipe(id); toast('Foto sudah hilang'); return; }
   }
@@ -2351,7 +2385,7 @@ async function openPhoto(id) {
   const token = V;
   $('vStage').className = 'vstage' + (isEr || mine ? ' er' : ''); $('vStage').style.transform = ''; $('vStage').innerHTML = '<div class="spin"></div>';
   $('vT').textContent = mine ? USERS[me].own : partnerView().name; $('vS').textContent = 'Membuka…'; $('vS').className = '';
-  $('vDl').hidden = true;
+  $('vDl').hidden = true; $('vDel').hidden = true;
   $('viewer').classList.add('open');
   if (isEr || mine) shieldOff = true; // Er, dan pengirim untuk foto sendiri, boleh screenshot
   try {
@@ -2392,18 +2426,15 @@ function showInViewer(m, url, isEr, mine) {
         const rcvIsEr = m.sender !== 'er'; // foto yang dikirim ke Er punya batas waktu tersendiri setelah dibuka
         const dl = () => {
           if (!V) return;
-          let left = new Date(m.expires_at) - Date.now();
-          if (rcvIsEr && m.viewed_at) left = Math.min(left, +new Date(m.viewed_at) + ER_MS - Date.now());
-          left = Math.max(0, left);
-          $('vS').textContent = left > 0 ? 'Pratinjau kiriman · hilang dalam ' + fmtCount(left) : 'Pratinjau kiriman';
+          let left = Math.max(0, new Date(m.expires_at) - Date.now());
+          $('vS').textContent = (!rcvIsEr && left > 0 && left < 86400000) ? 'Pratinjau kiriman · hilang dalam ' + fmtCount(left) : 'Pratinjau kiriman';
           $('vS').className = '';
         };
         dl(); V.timer = setInterval(dl, 1000);
       } else if (isEr) {
         img.draggable = false; img.alt = 'Foto'; st.appendChild(img);
-        $('vDl').hidden = false;
-        const dl = () => { const left = +new Date(m.viewed_at) + ER_MS - Date.now(); $('vS').textContent = 'Hilang dalam ' + fmtCount(left); $('vS').className = left < 300000 ? 'warn' : ''; if (left <= 0) { closeViewer(true); wipe(m.id); toast('Waktu foto habis'); } };
-        dl(); V.timer = setInterval(dl, 1000);
+        $('vDl').hidden = false; $('vDel').hidden = false;
+        $('vS').textContent = 'Tersimpan sampai kamu menghapusnya'; $('vS').className = '';
       } else {
         const c = document.createElement('canvas'); c.width = img.naturalWidth; c.height = img.naturalHeight;
         const g = c.getContext('2d'); g.drawImage(img, 0, 0);
@@ -2438,6 +2469,10 @@ async function burnPhoto(id) {
   await wipe(id);
 }
 $('vClose').addEventListener('click', () => closeViewer(false));
+$('vDel').addEventListener('click', () => {
+  if (!V || !V.isEr || V.mine) return;
+  const id = V.id; closeViewer(true); deleteMsg(id);
+});
 $('vDl').addEventListener('click', () => {
   if (!V || !V.url) return;
   const a = document.createElement('a'); a.href = V.url; a.download = 'foto-' + Date.now() + '.jpg';
@@ -3188,7 +3223,7 @@ window.addEventListener('scroll', () => window.scrollTo(0, 0));
 
 // ikon statis
 $('btnRooms').innerHTML = I.side + '<b class="bd"></b>'; $('drClose').innerHTML = I.x; $('btnLock').innerHTML = I.lock; $('btnMenu').innerHTML = I.more; $('btnPhoto').innerHTML = I.image;
-updateSendBtn(); $('vClose').innerHTML = I.x; $('vDl').innerHTML = I.dl; $('fab').insertAdjacentHTML('afterbegin', I.down); $('eye').innerHTML = I.eye;
+updateSendBtn(); $('vClose').innerHTML = I.x; $('vDl').innerHTML = I.dl; $('vDel').innerHTML = I.trash; $('fab').insertAdjacentHTML('afterbegin', I.down); $('eye').innerHTML = I.eye;
 $('rbClose').innerHTML = I.x;
 
 $('pAdd').innerHTML = I.plus; $('pLock').innerHTML = I.lock; $('rBack').innerHTML = I.back; $('rEdit').innerHTML = I.edit; $('rDel').innerHTML = I.trash; $('eClose').innerHTML = I.x;
